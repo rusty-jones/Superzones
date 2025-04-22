@@ -206,19 +206,20 @@ def identify_super_zones(ticker, trade_log):
                     trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
                 i += 1
         
-        # Step 3: Deduplicate super zones by level
+        # Step 3: Deduplicate super zones by level, preserving interval groups
         dedup_zones = []
         seen_levels = {}
         for zone in sorted(super_zones, key=lambda x: x['level']):
             level = round(zone['level'], 2)
-            if level in seen_levels:
-                existing = seen_levels[level]
-                existing['intervals'] = list(set(existing['intervals'] + zone['intervals']))
+            interval_key = tuple(sorted(zone['intervals']))
+            key = (level, interval_key)
+            if key in seen_levels:
+                existing = seen_levels[key]
                 existing['periods'] = list(set(existing['periods'] + zone['periods']))
                 existing['date'] = min(existing['date'], zone['date'])
-                trade_log.append(f"Deduplicated zone at {level:.2f} ({zone['type']})")
+                trade_log.append(f"Deduplicated zone at {level:.2f} ({zone['type']}) with intervals {interval_key}")
             else:
-                seen_levels[level] = zone
+                seen_levels[key] = zone
                 dedup_zones.append(zone)
         
         trade_log.append(f"Found {len(dedup_zones)} super zones for {ticker} after deduplication")
@@ -441,8 +442,8 @@ def plot_chart(ticker, period=None, interval=None):
             relevant_zones = [z for z in super_zones if set(['15m', '5m']).issubset(z['intervals'])]
             trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (15m+5m)")
         elif period == '1mo' and interval in ['1h', '30m']:
-            relevant_zones = [z for z in super_zones if set(['1h', '30m']).issubset(z['intervals'])]
-            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (1h+30m)")
+            relevant_zones = [z for z in super_zones if sorted(z['intervals']) == ['1h', '30m']]
+            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (1h+30m only)")
         else:
             relevant_zones = [z for z in super_zones if '1wk' in z['intervals'] or '1d' in z['intervals']]
             trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (weekly/daily)")
