@@ -8,6 +8,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import numpy as np
 from io import BytesIO
+from datetime import timedelta
 
 warnings.filterwarnings("ignore", message="Series.__getitem__", category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -205,8 +206,23 @@ def identify_super_zones(ticker, trade_log):
                     trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
                 i += 1
         
-        trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
-        return super_zones
+        # Step 3: Deduplicate super zones by level
+        dedup_zones = []
+        seen_levels = {}
+        for zone in sorted(super_zones, key=lambda x: x['level']):
+            level = round(zone['level'], 2)
+            if level in seen_levels:
+                existing = seen_levels[level]
+                existing['intervals'] = list(set(existing['intervals'] + zone['intervals']))
+                existing['periods'] = list(set(existing['periods'] + zone['periods']))
+                existing['date'] = min(existing['date'], zone['date'])
+                trade_log.append(f"Deduplicated zone at {level:.2f} ({zone['type']})")
+            else:
+                seen_levels[level] = zone
+                dedup_zones.append(zone)
+        
+        trade_log.append(f"Found {len(dedup_zones)} super zones for {ticker} after deduplication")
+        return dedup_zones
     except Exception as e:
         trade_log.append(f"Error identifying super zones for {ticker}: {str(e)}")
         return []
@@ -327,6 +343,9 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             instances = find_approaches_and_labels(df, zones)
             model, accuracy = train_model(instances)
 
+        chart_start = df.index.min()
+        max_date_shift = timedelta(days=5) if '1d' in st.session_state.period else timedelta(days=30)
+
         for zone in zones:
             limit_price = zone['level']
             base_time = zone['date']
@@ -334,12 +353,21 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             color = 'blue' if side == 'BUY' else 'red'
             linewidth = 2 if super_zones else 1
 
+            if abs(base_time - chart_start) > max_date_shift:
+                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Date {base_time} too far from chart start {chart_start}")
+                continue
+
             if base_time not in df.index:
                 try:
-                    closest_idx = abs(df.index - base_time).argmin()
+                    time_diffs = abs(df.index - base_time)
+                    closest_idx = time_diffs.argmin()
                     closest_date = df.index[closest_idx]
-                    trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
-                    base_time = closest_date
+                    if abs(closest_date - base_time) <= max_date_shift:
+                        trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
+                        base_time = closest_date
+                    else:
+                        trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Adjusted date {closest_date} too far from {base_time}")
+                        continue
                 except Exception as e:
                     trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
                     continue
@@ -407,9 +435,21 @@ def plot_chart(ticker, period=None, interval=None):
         super_zones = identify_super_zones(ticker, trade_log)
         trade_log.append(f"Found {len(super_zones)} super zones")
 
+        # Filter super zones based on chart timeframe
+        relevant_zones = []
+        if period in ['1d', '5d'] and interval in ['5m', '15m']:
+            relevant_zones = [z for z in super_zones if set(['15m', '5m']).issubset(z['intervals'])]
+            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (15m+5m)")
+        elif period == '1mo' and interval in ['1h', '30m']:
+            relevant_zones = [z for z in super_zones if set(['1h', '30m']).issubset(z['intervals'])]
+            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (1h+30m)")
+        else:
+            relevant_zones = [z for z in super_zones if '1wk' in z['intervals'] or '1d' in z['intervals']]
+            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (weekly/daily)")
+
         trade_log.append(f"Creating chart for {ticker}")
         fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, super_zones, trade_log, period, interval)
+        update_chart(df, ax, ticker, relevant_zones, trade_log, period, interval)
         
         trade_log.append(f"Saving chart for {ticker}")
         buf = save_chart(fig)
@@ -534,6 +574,8 @@ def main():
         st.session_state.limit_lines = True
     if 'show_prices' not in st.session_state:
         st.session_state.show_prices = False
+    if 'enable_ai' not in st.session_state:
+        st.session_state.enable_ai = False
     if 'live_update' not in st.session_state:
         st.session_state.live_update = False
     if 'trade_log' not in st.session_state:
@@ -592,7 +634,7 @@ def main():
     with col5:
         st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices, help="Show price levels for super zones")
     with col6:
-        st.session_state.enable_ai = st.checkbox("AI", value=False, help="Enable AI-based signal predictions")
+        st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai, help="Enable AI-based signal predictions")
 
     st.divider()
 
