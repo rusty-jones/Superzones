@@ -109,6 +109,7 @@ def identify_super_zones(ticker, trade_log):
         data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
         if mapped_ticker in data:
             zones = identify_zones(data[mapped_ticker])
+            trade_log.append(f"Found {len(zones)} zones for {ticker} at {period}/{interval}")
             for zone in zones:
                 zone['period'] = period
                 zone['interval'] = interval
@@ -128,7 +129,8 @@ def identify_super_zones(ticker, trade_log):
             j = i + 1
             while j < len(zones):
                 avg_level = np.mean([z['level'] for z in cluster])
-                if abs(zones[j]['level'] - avg_level) <= avg_level * 0.01:
+                threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
+                if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
                     cluster.append(zones[j])
                     zones.pop(j)
                 else:
@@ -145,6 +147,7 @@ def identify_super_zones(ticker, trade_log):
                     'periods': list(set(z['period'] for z in cluster)),
                     'intervals': list(intervals)
                 })
+                trade_log.append(f"Super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
             i += 1
     
     # Step 2: Explicit super zones for intraday timeframes (1mo/1h + 1mo/30m, 5d/15m + 1d/5m)
@@ -160,7 +163,8 @@ def identify_super_zones(ticker, trade_log):
             j = i + 1
             while j < len(zones):
                 avg_level = np.mean([z['level'] for z in cluster])
-                if abs(zones[j]['level'] - avg_level) <= avg_level * 0.01:
+                threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
+                if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
                     cluster.append(zones[j])
                     zones.pop(j)
                 else:
@@ -176,6 +180,7 @@ def identify_super_zones(ticker, trade_log):
                     'periods': ['1mo'],
                     'intervals': list(intervals)
                 })
+                trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
             # Check for 5d/15m + 1d/5m
             if '15m' in intervals and '5m' in intervals:
                 avg_level = np.mean([z['level'] for z in cluster])
@@ -186,6 +191,7 @@ def identify_super_zones(ticker, trade_log):
                     'periods': ['5d', '1d'],
                     'intervals': list(intervals)
                 })
+                trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
             i += 1
     
     trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
@@ -279,6 +285,7 @@ def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
     mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
     ax.set_title(f"{ticker} ({period}/{interval})", fontsize=12)
     plot_zones(ax, df, super_zones, trade_log, super_zones=True)
+    trade_log.append(f"Rendered {len(super_zones)} super zones for {ticker} at {period}/{interval}")
 
 def plot_zones(ax, df, zones, trade_log, super_zones=False):
     show_limit_lines = st.session_state.limit_lines
@@ -351,6 +358,7 @@ def plot_chart(ticker, period=None, interval=None):
         fig, ax = plt.subplots(figsize=(8, 4))
         update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
         buf = save_chart(fig)
+        plt.close(fig)  # Close figure to prevent memory issues
         return fig, buf
 
     except Exception as e:
@@ -370,23 +378,24 @@ def plot_analysis_charts(ticker):
         {'period': '1d', 'interval': '5m'}
     ]
 
-    st.session_state.trade_log.append(f"Plotting analysis charts for {ticker}")
+    st.session_state.trade_log.append(f"Plotting full analysis charts for {ticker}")
     for tf in timeframes:
         period = tf['period']
         interval = tf['interval']
-        st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
-        fig, buf = plot_chart(ticker, period, interval)
-        if fig and buf:
-            st.pyplot(fig)
-            st.download_button(
-                f"Save {period}/{interval} Chart",
-                data=buf,
-                file_name=f"{ticker}_{period}_{interval}_super_zones.png",
-                mime="image/png",
-                help=f"Download the {period}/{interval} chart for {ticker}"
-            )
-        else:
-            st.write(f"No data available for {period}/{interval}")
+        with st.container():
+            st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
+            fig, buf = plot_chart(ticker, period, interval)
+            if fig and buf:
+                st.pyplot(fig)
+                st.download_button(
+                    f"Save {period}/{interval} Chart",
+                    data=buf,
+                    file_name=f"{ticker}_{period}_{interval}_super_zones.png",
+                    mime="image/png",
+                    help=f"Download the {period}/{interval} chart for {ticker}"
+                )
+            else:
+                st.write(f"No data available for {period}/{interval}")
 
 # Streamlit app
 def main():
@@ -432,9 +441,11 @@ def main():
         .css-1v3fvcr .stTextInput {
             margin-bottom: 1rem;
         }
-        /* Chart margins */
-        .stPlotlyChart, .stPyplot {
-            margin: 1rem 0;
+        /* Chart styling */
+        .stPyplot {
+            width: 100% !important;
+            max-width: 800px;
+            margin: 1rem auto;
             padding: 0.5rem;
             background-color: #fff;
             border-radius: 5px;
@@ -442,10 +453,8 @@ def main():
         }
         /* Trade log styling */
         .stExpander {
-            border: 1px solid #e0e0e0;
             border-radius: 5px;
             margin-bottom: 1rem;
-            background-color: #fff;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -537,15 +546,11 @@ def main():
                     st.session_state.main_fig = fig
                     st.session_state.main_buf = buf
     with col8:
-        if st.button("View Analysis", help="Show charts for multiple timeframes"):
+        if st.button("View Full Analysis", help="Show charts for multiple timeframes"):
             if not st.session_state.ticker:
                 st.session_state.trade_log.append("No ticker specified")
             else:
                 plot_analysis_charts(st.session_state.ticker)
-
-    # Trade log
-    with st.expander("Trade Log"):
-        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=150, disabled=True, help="View recent actions and errors")
 
     # Display main chart if available
     if 'main_fig' in st.session_state and st.session_state.main_fig:
@@ -557,6 +562,10 @@ def main():
             mime="image/png",
             help="Download the main chart"
         )
+
+    # Trade log
+    with st.expander("Trade Log"):
+        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=150, disabled=True, help="View recent actions and errors")
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
