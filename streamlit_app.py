@@ -68,6 +68,8 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
             data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             data.set_index('Date', inplace=True)
+            # Normalize timestamps to tz-naive
+            data.index = data.index.tz_localize(None)
             trade_log.append(f"Fetched {len(data)} data points for {ticker}")
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
