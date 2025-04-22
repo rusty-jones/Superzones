@@ -94,7 +94,8 @@ def identify_super_zones(ticker, trade_log):
         {'period': '6mo', 'interval': '1wk'},
         {'period': '6mo', 'interval': '1d'},
         {'period': '3mo', 'interval': '1d'},
-        {'period': '1mo', 'interval': '1h'}
+        {'period': '1mo', 'interval': '1h'},
+        {'period': '1mo', 'interval': '30m'}
     ]
     
     all_zones = []
@@ -113,6 +114,7 @@ def identify_super_zones(ticker, trade_log):
         else:
             trade_log.append(f"No data for {mapped_ticker} at {period}/{interval}")
     
+    # Step 1: Existing super zone logic (weekly + daily/hourly)
     demand_zones = [z for z in all_zones if z['type'] == 'demand']
     supply_zones = [z for z in all_zones if z['type'] == 'supply']
     
@@ -131,7 +133,7 @@ def identify_super_zones(ticker, trade_log):
                     j += 1
             intervals = set(z['interval'] for z in cluster)
             has_weekly = '1wk' in intervals
-            has_daily_or_hourly = '1d' in intervals or '1h' in intervals
+            has_daily_or_hourly = '1d' in intervals or '1h' in intervals or '30m' in intervals
             if has_weekly and has_daily_or_hourly:
                 avg_level = np.mean([z['level'] for z in cluster])
                 super_zones.append({
@@ -139,6 +141,36 @@ def identify_super_zones(ticker, trade_log):
                     'type': zone_type,
                     'level': avg_level,
                     'periods': list(set(z['period'] for z in cluster)),
+                    'intervals': list(intervals)
+                })
+            i += 1
+    
+    # Step 2: New logic for 1mo/1h and 1mo/30m super zones
+    intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m']]
+    intraday_demand = [z for z in intraday_zones if z['type'] == 'demand']
+    intraday_supply = [z for z in intraday_zones if z['type'] == 'supply']
+    
+    for zone_type in ['demand', 'supply']:
+        zones = intraday_demand if zone_type == 'demand' else intraday_supply
+        i = 0
+        while i < len(zones):
+            cluster = [zones[i]]
+            j = i + 1
+            while j < len(zones):
+                avg_level = np.mean([z['level'] for z in cluster])
+                if abs(zones[j]['level'] - avg_level) <= avg_level * 0.01:
+                    cluster.append(zones[j])
+                    zones.pop(j)
+                else:
+                    j += 1
+            intervals = set(z['interval'] for z in cluster)
+            if '1h' in intervals and '30m' in intervals:
+                avg_level = np.mean([z['level'] for z in cluster])
+                super_zones.append({
+                    'date': min(z['date'] for z in cluster),
+                    'type': zone_type,
+                    'level': avg_level,
+                    'periods': ['1mo'],
                     'intervals': list(intervals)
                 })
             i += 1
