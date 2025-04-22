@@ -95,7 +95,9 @@ def identify_super_zones(ticker, trade_log):
         {'period': '6mo', 'interval': '1d'},
         {'period': '3mo', 'interval': '1d'},
         {'period': '1mo', 'interval': '1h'},
-        {'period': '1mo', 'interval': '30m'}
+        {'period': '1mo', 'interval': '30m'},
+        {'period': '5d', 'interval': '15m'},
+        {'period': '1d', 'interval': '5m'}
     ]
     
     all_zones = []
@@ -114,7 +116,7 @@ def identify_super_zones(ticker, trade_log):
         else:
             trade_log.append(f"No data for {mapped_ticker} at {period}/{interval}")
     
-    # Step 1: Existing super zone logic (weekly + daily/hourly)
+    # Step 1: Existing super zone logic (weekly + daily/hourly/minute)
     demand_zones = [z for z in all_zones if z['type'] == 'demand']
     supply_zones = [z for z in all_zones if z['type'] == 'supply']
     
@@ -133,8 +135,8 @@ def identify_super_zones(ticker, trade_log):
                     j += 1
             intervals = set(z['interval'] for z in cluster)
             has_weekly = '1wk' in intervals
-            has_daily_or_hourly = '1d' in intervals or '1h' in intervals or '30m' in intervals
-            if has_weekly and has_daily_or_hourly:
+            has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals or '15m' in intervals or '5m' in intervals
+            if has_weekly and has_daily_or_shorter:
                 avg_level = np.mean([z['level'] for z in cluster])
                 super_zones.append({
                     'date': min(z['date'] for z in cluster),
@@ -145,8 +147,8 @@ def identify_super_zones(ticker, trade_log):
                 })
             i += 1
     
-    # Step 2: New logic for 1mo/1h and 1mo/30m super zones
-    intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m']]
+    # Step 2: Explicit super zones for intraday timeframes (1mo/1h + 1mo/30m, 5d/15m + 1d/5m)
+    intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m', '15m', '5m']]
     intraday_demand = [z for z in intraday_zones if z['type'] == 'demand']
     intraday_supply = [z for z in intraday_zones if z['type'] == 'supply']
     
@@ -164,6 +166,7 @@ def identify_super_zones(ticker, trade_log):
                 else:
                     j += 1
             intervals = set(z['interval'] for z in cluster)
+            # Check for 1mo/1h + 1mo/30m
             if '1h' in intervals and '30m' in intervals:
                 avg_level = np.mean([z['level'] for z in cluster])
                 super_zones.append({
@@ -173,62 +176,20 @@ def identify_super_zones(ticker, trade_log):
                     'periods': ['1mo'],
                     'intervals': list(intervals)
                 })
+            # Check for 5d/15m + 1d/5m
+            if '15m' in intervals and '5m' in intervals:
+                avg_level = np.mean([z['level'] for z in cluster])
+                super_zones.append({
+                    'date': min(z['date'] for z in cluster),
+                    'type': zone_type,
+                    'level': avg_level,
+                    'periods': ['5d', '1d'],
+                    'intervals': list(intervals)
+                })
             i += 1
     
     trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
     return super_zones
-
-# Commented out as probabilities are no longer displayed
-# def calculate_super_zone_probability(ticker, super_zones, trade_log):
-#     probabilities = []
-#     mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
-#     for sz in super_zones:
-#         zone_level = sz['level']
-#         zone_type = sz['type']
-#         data = fetch_and_process_data([mapped_ticker], 'max', '1d', trade_log)
-#         if mapped_ticker not in data:
-#             continue
-#         df = data[mapped_ticker]
-#         instances = []
-#         future_data = df[df.index > sz['date']]
-#         if zone_type == 'demand':
-#             approaches = future_data[(future_data['low'] >= zone_level * 0.99) & (future_data['low'] <= zone_level * 1.01)]
-#         else:
-#             approaches = future_data[(future_data['high'] >= zone_level * 0.99) & (future_data['high'] <= zone_level * 1.01)]
-#         for approach_date in approaches.index:
-#             approach_price = df.loc[approach_date, 'close']
-#             post_approach = df[df.index > approach_date]
-#             if zone_type == 'demand':
-#                 break_level = zone_level * 0.995
-#                 target_level = approach_price * 1.02
-#                 hit_break = (post_approach['low'] <= break_level).any()
-#                 hit_target = (post_approach['high'] >= target_level).any()
-#             else:
-#                 break_level = zone_level * 1.005
-#                 target_level = approach_price * 0.98
-#                 hit_break = (post_approach['high'] >= break_level).any()
-#                 hit_target = (post_approach['low'] <= target_level).any()
-#             if hit_break and hit_target:
-#                 break_idx = post_approach[post_approach['low'] <= break_level].index[0] if zone_type == 'demand' else post_approach[post_approach['high'] >= break_level].index[0]
-#                 target_idx = post_approach[post_approach['high'] >= target_level].index[0] if zone_type == 'demand' else post_approach[post_approach['low'] <= target_level].index[0]
-#                 outcome = 'held' if target_idx < break_idx else 'broke'
-#             elif hit_target:
-#                 outcome = 'held'
-#             elif hit_break:
-#                 outcome = 'broke'
-#             else:
-#                 continue
-#             instances.append({'outcome': outcome})
-#         held_count = sum(1 for inst in instances if inst['outcome'] == 'held')
-#         total = len(instances)
-#         prob_held = (held_count / total * 100) if total > 0 else 0
-#         probabilities.append({
-#             'level': zone_level,
-#             'type': zone_type,
-#             'probability_held': prob_held,
-#             'approaches': total
-#         })
-#     return probabilities
 
 def find_approaches_and_labels(df, zones):
     instances = []
@@ -404,14 +365,16 @@ def plot_analysis_charts(ticker):
         {'period': '6mo', 'interval': '1d'},
         {'period': '3mo', 'interval': '1d'},
         {'period': '1mo', 'interval': '1h'},
-        {'period': '1mo', 'interval': '30m'}
+        {'period': '1mo', 'interval': '30m'},
+        {'period': '5d', 'interval': '15m'},
+        {'period': '1d', 'interval': '5m'}
     ]
 
     st.session_state.trade_log.append(f"Plotting analysis charts for {ticker}")
     for tf in timeframes:
         period = tf['period']
         interval = tf['interval']
-        st.subheader(f"{ticker} ({period}/{interval})")
+        st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
         fig, buf = plot_chart(ticker, period, interval)
         if fig and buf:
             st.pyplot(fig)
@@ -419,7 +382,8 @@ def plot_analysis_charts(ticker):
                 f"Save {period}/{interval} Chart",
                 data=buf,
                 file_name=f"{ticker}_{period}_{interval}_super_zones.png",
-                mime="image/png"
+                mime="image/png",
+                help=f"Download the {period}/{interval} chart for {ticker}"
             )
         else:
             st.write(f"No data available for {period}/{interval}")
@@ -428,21 +392,60 @@ def plot_analysis_charts(ticker):
 def main():
     st.set_page_config(page_title="Stock Charting Tool", layout="wide")
     
-    # Custom CSS for small fonts
+    # Custom CSS for UI polishing
     st.markdown("""
         <style>
+        /* General font and spacing */
         .css-1y0tads, .css-1v0mbdj, .css-1v3fvcr, .css-1r6slb0, .css-17e7dxy, .css-1d391kg {
             font-size: 12px !important;
         }
+        h1, h2, h3 {
+            font-size: 14px !important;
+            font-weight: bold;
+        }
+        /* Main area styling */
+        .main .block-container {
+            padding: 1rem;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        /* Input and button alignment */
+        .stTextInput, .stSelectbox {
+            margin-bottom: 0.5rem;
+        }
         .stButton>button {
             font-size: 12px !important;
-            padding: 5px 10px !important;
+            padding: 6px 12px !important;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin: 0 5px;
         }
-        .stTextInput input, .stSelectbox select {
-            font-size: 12px !important;
+        .stButton>button:hover {
+            background-color: #e0e0e0;
         }
-        .stTextArea textarea {
-            font-size: 12px !important;
+        /* Sidebar styling */
+        .css-1v3fvcr .stButton>button {
+            width: 100%;
+            text-align: left;
+            margin-bottom: 0.3rem;
+        }
+        .css-1v3fvcr .stTextInput {
+            margin-bottom: 1rem;
+        }
+        /* Chart margins */
+        .stPlotlyChart, .stPyplot {
+            margin: 1rem 0;
+            padding: 0.5rem;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        /* Trade log styling */
+        .stExpander {
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+            background-color: #fff;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -471,20 +474,20 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.subheader("Stocks")
-        if st.button("Toggle Sidebar"):
+        st.subheader("Select Stock")
+        if st.button("Toggle Sidebar", help="Show or hide the stock selection panel"):
             st.session_state.show_sidebar = not st.session_state.show_sidebar
 
         if st.session_state.show_sidebar:
             # Search bar
-            st.text_input("Search Stocks", key="search", placeholder="e.g., Nifty, RELIANCE")
+            st.text_input("Search Stocks", key="search", placeholder="e.g., Nifty, RELIANCE", help="Filter stocks by name")
             search_query = st.session_state.search.lower()
             filtered_tickers = [
                 ticker for ticker, display_name in display_mapping.items()
                 if search_query in display_name.lower()
             ]
             for stock in sorted(filtered_tickers):
-                if st.button(display_mapping[stock], key=stock):
+                if st.button(display_mapping[stock], key=stock, help=f"View chart for {display_mapping[stock]}"):
                     st.session_state.ticker = stock
                     st.session_state.trade_log.append(f"Selected {stock}")
                     # Auto-plot on ticker click
@@ -496,30 +499,36 @@ def main():
     # Main area
     st.title("Stock Charting Tool")
     
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Input controls
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
-        ticker = st.text_input("Ticker", value=st.session_state.ticker, placeholder="e.g., RELIANCE, Nifty")
+        ticker = st.text_input("Ticker", value=st.session_state.ticker, placeholder="e.g., RELIANCE, Nifty", help="Enter a stock or index ticker")
         st.session_state.ticker = ticker
     with col2:
         st.session_state.period = st.selectbox("Period", 
             ['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'], 
-            index=['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'].index(st.session_state.period))
+            index=['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'].index(st.session_state.period),
+            help="Select the time period for the chart")
     with col3:
         st.session_state.interval = st.selectbox("Interval", 
             ['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo'], 
-            index=['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo'].index(st.session_state.interval))
+            index=['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo'].index(st.session_state.interval),
+            help="Select the time interval for the chart")
 
     col4, col5, col6 = st.columns(3)
     with col4:
-        st.session_state.limit_lines = st.checkbox("Limit Lines", value=st.session_state.limit_lines)
+        st.session_state.limit_lines = st.checkbox("Limit Lines", value=st.session_state.limit_lines, help="Show horizontal lines for super zones")
     with col5:
-        st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices)
+        st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices, help="Show price levels for super zones")
     with col6:
-        st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai)
+        st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai, help="Enable AI-based signal predictions")
 
-    col7, col8 = st.columns(2)
+    st.divider()
+
+    # Buttons
+    col7, col8, col9 = st.columns([1, 1, 3])
     with col7:
-        if st.button("Plot"):
+        if st.button("Plot", help="Generate chart for the selected ticker"):
             if not st.session_state.ticker:
                 st.session_state.trade_log.append("No ticker specified")
             else:
@@ -528,11 +537,15 @@ def main():
                     st.session_state.main_fig = fig
                     st.session_state.main_buf = buf
     with col8:
-        if st.button("View Analysis"):
+        if st.button("View Analysis", help="Show charts for multiple timeframes"):
             if not st.session_state.ticker:
                 st.session_state.trade_log.append("No ticker specified")
             else:
                 plot_analysis_charts(st.session_state.ticker)
+
+    # Trade log
+    with st.expander("Trade Log"):
+        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=150, disabled=True, help="View recent actions and errors")
 
     # Display main chart if available
     if 'main_fig' in st.session_state and st.session_state.main_fig:
@@ -541,12 +554,9 @@ def main():
             "Save Chart",
             data=st.session_state.main_buf,
             file_name=f"{st.session_state.ticker}_super_zones.png",
-            mime="image/png"
+            mime="image/png",
+            help="Download the main chart"
         )
-
-    # Trade log
-    with st.expander("Trade Log"):
-        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=100, disabled=True)
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
