@@ -336,7 +336,7 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
 
             if base_time not in df.index:
                 try:
-                    closest_idx = (df.index - base_time).abs().argmin()
+                    closest_idx = abs(df.index - base_time).argmin()
                     closest_date = df.index[closest_idx]
                     trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
                     base_time = closest_date
@@ -534,8 +534,6 @@ def main():
         st.session_state.limit_lines = True
     if 'show_prices' not in st.session_state:
         st.session_state.show_prices = False
-    if 'enable_ai' not in st.session_state:
-        st.session_state.enable_ai = False
     if 'live_update' not in st.session_state:
         st.session_state.live_update = False
     if 'trade_log' not in st.session_state:
@@ -594,7 +592,7 @@ def main():
     with col5:
         st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices, help="Show price levels for super zones")
     with col6:
-        st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai, help="Enable AI-based signal predictions")
+        st.session_state.enable_ai = st.checkbox("AI", value=False, help="Enable AI-based signal predictions")
 
     st.divider()
 
