@@ -310,12 +310,12 @@ def check_signals(df, zones, model, trade_log):
             })
     return signals
 
-def update_chart(df, ax, ticker, super_zones, trade_log):
+def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
     ax.clear()
     df_plot = df.copy()
     df_plot.index.name = 'Date'
     mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
-    ax.set_title(f"{ticker} ({st.session_state.period}/{st.session_state.interval})", fontsize=12)
+    ax.set_title(f"{ticker} ({period}/{interval})", fontsize=12)
     plot_zones(ax, df, super_zones, trade_log, super_zones=True)
 
 def plot_zones(ax, df, zones, trade_log, super_zones=False):
@@ -370,6 +370,72 @@ def save_chart(fig):
     buf.seek(0)
     return buf
 
+def plot_chart(ticker, period=None, interval=None):
+    try:
+        # Use session state period/interval if not provided
+        period = period or st.session_state.period
+        interval = interval or st.session_state.interval
+        mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
+
+        st.session_state.trade_log.append(f"Plotting {ticker} (Period: {period}, Interval: {interval})")
+        data = fetch_and_process_data([mapped_ticker], period, interval, st.session_state.trade_log)
+        if mapped_ticker not in data:
+            st.session_state.trade_log.append(f"No data for {ticker}")
+            return None, None
+
+        df = data[mapped_ticker]
+        super_zones = identify_super_zones(ticker, st.session_state.trade_log)
+        probabilities = calculate_super_zone_probability(ticker, super_zones, st.session_state.trade_log)
+
+        # Display probabilities as formatted text
+        if probabilities:
+            prob_text = f"**Super Zone Probabilities ({period}/{interval}):**\n"
+            for prob in probabilities:
+                prob_text += f"- **{prob['type'].capitalize()} Zone** at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)\n"
+                st.session_state.trade_log.append(
+                    f"Super Zone {prob['type']} at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)"
+                )
+            st.markdown(prob_text)
+        else:
+            st.markdown(f"**Super Zone Probabilities ({period}/{interval}):** No super zones found.")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
+        buf = save_chart(fig)
+        return fig, buf
+
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error plotting {ticker}: {str(e)}")
+        traceback.print_exc()
+        return None, None
+
+def plot_analysis_charts(ticker):
+    timeframes = [
+        {'period': '1y', 'interval': '1wk'},
+        {'period': '6mo', 'interval': '1wk'},
+        {'period': '6mo', 'interval': '1d'},
+        {'period': '3mo', 'interval': '1d'},
+        {'period': '1mo', 'interval': '1h'},
+        {'period': '1mo', 'interval': '30m'}
+    ]
+
+    st.session_state.trade_log.append(f"Plotting analysis charts for {ticker}")
+    for tf in timeframes:
+        period = tf['period']
+        interval = tf['interval']
+        st.subheader(f"{ticker} ({period}/{interval})")
+        fig, buf = plot_chart(ticker, period, interval)
+        if fig and buf:
+            st.pyplot(fig)
+            st.download_button(
+                f"Save {period}/{interval} Chart",
+                data=buf,
+                file_name=f"{ticker}_{period}_{interval}_super_zones.png",
+                mime="image/png"
+            )
+        else:
+            st.write(f"No data available for {period}/{interval}")
+
 # Streamlit app
 def main():
     st.set_page_config(page_title="Stock Charting Tool", layout="wide")
@@ -412,6 +478,8 @@ def main():
         st.session_state.trade_log = []
     if 'show_sidebar' not in st.session_state:
         st.session_state.show_sidebar = True
+    if 'search' not in st.session_state:
+        st.session_state.search = ""
 
     # Sidebar
     with st.sidebar:
@@ -420,10 +488,22 @@ def main():
             st.session_state.show_sidebar = not st.session_state.show_sidebar
 
         if st.session_state.show_sidebar:
-            for stock in sorted(display_mapping.keys()):
+            # Search bar
+            st.text_input("Search Stocks", key="search", placeholder="e.g., Nifty, RELIANCE")
+            search_query = st.session_state.search.lower()
+            filtered_tickers = [
+                ticker for ticker, display_name in display_mapping.items()
+                if search_query in display_name.lower()
+            ]
+            for stock in sorted(filtered_tickers):
                 if st.button(display_mapping[stock], key=stock):
                     st.session_state.ticker = stock
                     st.session_state.trade_log.append(f"Selected {stock}")
+                    # Auto-plot on ticker click
+                    fig, buf = plot_chart(stock)
+                    if fig and buf:
+                        st.session_state.main_fig = fig
+                        st.session_state.main_buf = buf
 
     # Main area
     st.title("Stock Charting Tool")
@@ -449,11 +529,32 @@ def main():
     with col6:
         st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai)
 
-    if st.button("Plot"):
-        if not st.session_state.ticker:
-            st.session_state.trade_log.append("No ticker specified")
-        else:
-            plot_chart(st.session_state.ticker)
+    col7, col8 = st.columns(2)
+    with col7:
+        if st.button("Plot"):
+            if not st.session_state.ticker:
+                st.session_state.trade_log.append("No ticker specified")
+            else:
+                fig, buf = plot_chart(st.session_state.ticker)
+                if fig and buf:
+                    st.session_state.main_fig = fig
+                    st.session_state.main_buf = buf
+    with col8:
+        if st.button("View Analysis"):
+            if not st.session_state.ticker:
+                st.session_state.trade_log.append("No ticker specified")
+            else:
+                plot_analysis_charts(st.session_state.ticker)
+
+    # Display main chart if available
+    if 'main_fig' in st.session_state and st.session_state.main_fig:
+        st.pyplot(st.session_state.main_fig)
+        st.download_button(
+            "Save Chart",
+            data=st.session_state.main_buf,
+            file_name=f"{st.session_state.ticker}_super_zones.png",
+            mime="image/png"
+        )
 
     # Trade log
     with st.expander("Trade Log"):
@@ -461,37 +562,10 @@ def main():
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
-        plot_chart(st.session_state.ticker)
-
-def plot_chart(ticker):
-    try:
-        period = st.session_state.period
-        interval = st.session_state.interval
-        mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
-
-        st.session_state.trade_log.append(f"Plotting {ticker} (Period: {period}, Interval: {interval})")
-        data = fetch_and_process_data([mapped_ticker], period, interval, st.session_state.trade_log)
-        if mapped_ticker not in data:
-            st.session_state.trade_log.append(f"No data for {ticker}")
-            return
-        df = data[mapped_ticker]
-
-        super_zones = identify_super_zones(ticker, st.session_state.trade_log)
-        probabilities = calculate_super_zone_probability(ticker, super_zones, st.session_state.trade_log)
-        for prob in probabilities:
-            st.session_state.trade_log.append(f"Super Zone {prob['type']} at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)")
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, super_zones, st.session_state.trade_log)
-        st.pyplot(fig)
-
-        # Save chart
-        buf = save_chart(fig)
-        st.download_button("Save Chart", data=buf, file_name=f"{ticker}_super_zones.png", mime="image/png")
-
-    except Exception as e:
-        st.session_state.trade_log.append(f"Error plotting {ticker}: {str(e)}")
-        traceback.print_exc()
+        fig, buf = plot_chart(st.session_state.ticker)
+        if fig and buf:
+            st.session_state.main_fig = fig
+            st.session_state.main_buf = buf
 
 if __name__ == "__main__":
     main()
