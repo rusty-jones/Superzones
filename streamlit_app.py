@@ -68,253 +68,230 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
             data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             data.set_index('Date', inplace=True)
-            # Normalize timestamps to tz-naive
+            # Normalize timestamps to tz-naive and align to interval
             data.index = data.index.tz_localize(None)
-            trade_log.append(f"Fetched {len(data)} data points for {ticker}")
+            if interval in ['5m', '15m', '30m', '1h']:
+                # Create expected time range (e.g., 09:15 to 15:30 for NSE)
+                start_date = data.index.min().date()
+                end_date = data.index.max().date()
+                freq = interval.replace('m', 'min')
+                expected_times = pd.date_range(start=start_date, end=end_date, freq=freq, tz=None)
+                data = data.reindex(expected_times, method='ffill').dropna()
+            trade_log.append(f"Fetched {len(data)} data points for {ticker}. First: {data.index[0]}, Last: {data.index[-1]}")
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
             all_data[ticker] = data
         except Exception as e:
             trade_log.append(f"Error fetching data for {ticker}: {str(e)}")
+            traceback.print_exc(file=st._get_print_file())
     return all_data
 
-def identify_zones(df):
-    zones = []
-    for i in range(1, len(df) - 1):
-        if df['low'].iloc[i] < df['low'].iloc[i-1] and df['low'].iloc[i] < df['low'].iloc[i+1]:
-            zones.append({'date': df.index[i], 'type': 'demand', 'level': df['low'].iloc[i]})
-        if df['high'].iloc[i] > df['high'].iloc[i-1] and df['high'].iloc[i] > df['high'].iloc[i+1]:
-            zones.append({'date': df.index[i], 'type': 'supply', 'level': df['high'].iloc[i]})
-    return zones
+def identify_zones(df, interval):
+    try:
+        zones = []
+        window = 3 if interval == '5m' else 1  # Looser pivot detection for 5m
+        for i in range(window, len(df) - window):
+            if all(df['low'].iloc[i] < df['low'].iloc[i-j] for j in range(1, window + 1)) and \
+               all(df['low'].iloc[i] < df['low'].iloc[i+j] for j in range(1, window + 1)):
+                zones.append({'date': df.index[i], 'type': 'demand', 'level': df['low'].iloc[i]})
+            if all(df['high'].iloc[i] > df['high'].iloc[i-j] for j in range(1, window + 1)) and \
+               all(df['high'].iloc[i] > df['high'].iloc[i+j] for j in range(1, window + 1)):
+                zones.append({'date': df.index[i], 'type': 'supply', 'level': df['high'].iloc[i]})
+        return zones
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error identifying zones for interval {interval}: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+        return []
 
 def identify_super_zones(ticker, trade_log):
-    super_zones = []
-    timeframe_configs = [
-        {'period': '1y', 'interval': '1wk'},
-        {'period': '6mo', 'interval': '1wk'},
-        {'period': '6mo', 'interval': '1d'},
-        {'period': '3mo', 'interval': '1d'},
-        {'period': '1mo', 'interval': '1h'},
-        {'period': '1mo', 'interval': '30m'},
-        {'period': '5d', 'interval': '15m'},
-        {'period': '1d', 'interval': '5m'}
-    ]
-    
-    all_zones = []
-    mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
-    trade_log.append(f"Identifying super zones for {ticker} (mapped to {mapped_ticker})")
-    for config in timeframe_configs:
-        period = config['period']
-        interval = config['interval']
-        data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
-        if mapped_ticker in data:
-            zones = identify_zones(data[mapped_ticker])
-            trade_log.append(f"Found {len(zones)} zones for {ticker} at {period}/{interval}")
-            for zone in zones:
-                zone['period'] = period
-                zone['interval'] = interval
-            all_zones.extend(zones)
-        else:
-            trade_log.append(f"No data for {mapped_ticker} at {period}/{interval}")
-    
-    # Step 1: Existing super zone logic (weekly + daily/hourly/minute)
-    demand_zones = [z for z in all_zones if z['type'] == 'demand']
-    supply_zones = [z for z in all_zones if z['type'] == 'supply']
-    
-    for zone_type in ['demand', 'supply']:
-        zones = demand_zones if zone_type == 'demand' else supply_zones
-        i = 0
-        while i < len(zones):
-            cluster = [zones[i]]
-            j = i + 1
-            while j < len(zones):
-                avg_level = np.mean([z['level'] for z in cluster])
-                threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
-                if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
-                    cluster.append(zones[j])
-                    zones.pop(j)
-                else:
-                    j += 1
-            intervals = set(z['interval'] for z in cluster)
-            has_weekly = '1wk' in intervals
-            has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals or '15m' in intervals or '5m' in intervals
-            if has_weekly and has_daily_or_shorter:
-                avg_level = np.mean([z['level'] for z in cluster])
-                super_zones.append({
-                    'date': min(z['date'] for z in cluster),
-                    'type': zone_type,
-                    'level': avg_level,
-                    'periods': list(set(z['period'] for z in cluster)),
-                    'intervals': list(intervals)
-                })
-                trade_log.append(f"Super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
-            i += 1
-    
-    # Step 2: Explicit super zones for intraday timeframes (1mo/1h + 1mo/30m, 5d/15m + 1d/5m)
-    intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m', '15m', '5m']]
-    intraday_demand = [z for z in intraday_zones if z['type'] == 'demand']
-    intraday_supply = [z for z in intraday_zones if z['type'] == 'supply']
-    
-    for zone_type in ['demand', 'supply']:
-        zones = intraday_demand if zone_type == 'demand' else intraday_supply
-        i = 0
-        while i < len(zones):
-            cluster = [zones[i]]
-            j = i + 1
-            while j < len(zones):
-                avg_level = np.mean([z['level'] for z in cluster])
-                threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
-                if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
-                    cluster.append(zones[j])
-                    zones.pop(j)
-                else:
-                    j += 1
-            intervals = set(z['interval'] for z in cluster)
-            # Check for 1mo/1h + 1mo/30m
-            if '1h' in intervals and '30m' in intervals:
-                avg_level = np.mean([z['level'] for z in cluster])
-                super_zones.append({
-                    'date': min(z['date'] for z in cluster),
-                    'type': zone_type,
-                    'level': avg_level,
-                    'periods': ['1mo'],
-                    'intervals': list(intervals)
-                })
-                trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
-            # Check for 5d/15m + 1d/5m
-            if '15m' in intervals and '5m' in intervals:
-                avg_level = np.mean([z['level'] for z in cluster])
-                super_zones.append({
-                    'date': min(z['date'] for z in cluster),
-                    'type': zone_type,
-                    'level': avg_level,
-                    'periods': ['5d', '1d'],
-                    'intervals': list(intervals)
-                })
-                trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
-            i += 1
-    
-    trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
-    return super_zones
+    try:
+        super_zones = []
+        timeframe_configs = [
+            {'period': '1y', 'interval': '1wk'},
+            {'period': '6mo', 'interval': '1wk'},
+            {'period': '6mo', 'interval': '1d'},
+            {'period': '3mo', 'interval': '1d'},
+            {'period': '1mo', 'interval': '1h'},
+            {'period': '1mo', 'interval': '30m'},
+            {'period': '5d', 'interval': '15m'},
+            {'period': '1d', 'interval': '5m'}
+        ]
+        
+        all_zones = []
+        mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
+        trade_log.append(f"Identifying super zones for {ticker} (mapped to {mapped_ticker})")
+        for config in timeframe_configs:
+            period = config['period']
+            interval = config['interval']
+            data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
+            if mapped_ticker in data:
+                zones = identify_zones(data[mapped_ticker], interval)
+                trade_log.append(f"Found {len(zones)} zones for {ticker} at {period}/{interval}")
+                for zone in zones:
+                    zone['date'] = zone['date'].round('5min')  # Round to match 5m intervals
+                    zone['period'] = period
+                    zone['interval'] = interval
+                    trade_log.append(f"Zone at {zone['level']:.2f} ({zone['type']}) on {zone['date']} for {period}/{interval}")
+                all_zones.extend(zones)
+            else:
+                trade_log.append(f"No data for {mapped_ticker} at {period}/{interval}")
+        
+        # Step 1: Weekly + daily/hourly/minute super zones
+        demand_zones = [z for z in all_zones if z['type'] == 'demand']
+        supply_zones = [z for z in all_zones if z['type'] == 'supply']
+        
+        for zone_type in ['demand', 'supply']:
+            zones = demand_zones if zone_type == 'demand' else supply_zones
+            i = 0
+            while i < len(zones):
+                cluster = [zones[i]]
+                j = i + 1
+                while j < len(zones):
+                    avg_level = np.mean([z['level'] for z in cluster])
+                    threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
+                    if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
+                        cluster.append(zones[j])
+                        zones.pop(j)
+                    else:
+                        j += 1
+                intervals = set(z['interval'] for z in cluster)
+                has_weekly = '1wk' in intervals
+                has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals or '15m' in intervals or '5m' in intervals
+                if has_weekly and has_daily_or_shorter:
+                    avg_level = np.mean([z['level'] for z in cluster])
+                    super_zones.append({
+                        'date': min(z['date'] for z in cluster),
+                        'type': zone_type,
+                        'level': avg_level,
+                        'periods': list(set(z['period'] for z in cluster)),
+                        'intervals': list(intervals)
+                    })
+                    trade_log.append(f"Super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
+                i += 1
+        
+        # Step 2: Intraday super zones (1mo/1h + 1mo/30m, 5d/15m + 1d/5m)
+        intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m', '15m', '5m']]
+        intraday_demand = [z for z in intraday_zones if z['type'] == 'demand']
+        intraday_supply = [z for z in intraday_zones if z['type'] == 'supply']
+        
+        for zone_type in ['demand', 'supply']:
+            zones = intraday_demand if zone_type == 'demand' else intraday_supply
+            i = 0
+            while i < len(zones):
+                cluster = [zones[i]]
+                j = i + 1
+                while j < len(zones):
+                    avg_level = np.mean([z['level'] for z in cluster])
+                    threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
+                    if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
+                        cluster.append(zones[j])
+                        zones.pop(j)
+                    else:
+                        j += 1
+                intervals = set(z['interval'] for z in cluster)
+                # Check for 1mo/1h + 1mo/30m
+                if '1h' in intervals and '30m' in intervals:
+                    avg_level = np.mean([z['level'] for z in cluster])
+                    super_zones.append({
+                        'date': min(z['date'] for z in cluster),
+                        'type': zone_type,
+                        'level': avg_level,
+                        'periods': ['1mo'],
+                        'intervals': list(intervals)
+                    })
+                    trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
+                # Check for 5d/15m + 1d/5m, or 15m alone as fallback
+                if '15m' in intervals or ('15m' in intervals and '5m' in intervals):
+                    avg_level = np.mean([z['level'] for z in cluster])
+                    super_zones.append({
+                        'date': min(z['date'] for z in cluster),
+                        'type': zone_type,
+                        'level': avg_level,
+                        'periods': ['5d', '1d'] if '5m' in intervals else ['5d'],
+                        'intervals': list(intervals)
+                    })
+                    trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
+                i += 1
+        
+        trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
+        return super_zones
+    except Exception as e:
+        trade_log.append(f"Error identifying super zones for {ticker}: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+        return []
 
 def find_approaches_and_labels(df, zones):
-    instances = []
-    for zone in zones:
-        limit_price = zone['level']
-        base_time = zone['date']
-        side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        future_data = df[df.index > base_time]
-        if side == 'BUY':
-            approaches = future_data[(future_data['low'] >= limit_price * 0.99) & (future_data['low'] <= limit_price * 1.01)]
-        else:
-            approaches = future_data[(future_data['high'] >= limit_price * 0.99) & (future_data['high'] <= limit_price * 1.01)]
-        for approach_date in approaches.index:
-            approach_price = df.loc[approach_date, 'close']
-            post_approach = df[df.index > approach_date]
+    try:
+        instances = []
+        for zone in zones:
+            limit_price = zone['level']
+            base_time = zone['date']
+            side = 'BUY' if zone['type'] == 'demand' else 'SELL'
+            future_data = df[df.index > base_time]
             if side == 'BUY':
-                break_level = limit_price * 0.995
-                target_level = approach_price * 1.02
-                hit_break = (post_approach['low'] <= break_level).any()
-                hit_target = (post_approach['high'] >= target_level).any()
+                approaches = future_data[(future_data['low'] >= limit_price * 0.99) & (future_data['low'] <= limit_price * 1.01)]
             else:
-                break_level = limit_price * 1.005
-                target_level = approach_price * 0.98
-                hit_break = (post_approach['high'] >= break_level).any()
-                hit_target = (post_approach['low'] <= target_level).any()
-            if hit_break and hit_target:
-                break_idx = post_approach[post_approach['low'] <= break_level].index[0] if side == 'BUY' else post_approach[post_approach['high'] >= break_level].index[0]
-                target_idx = post_approach[post_approach['high'] >= target_level].index[0] if side == 'BUY' else post_approach[post_approach['low'] <= target_level].index[0]
-                outcome = 1 if target_idx < break_idx else 0
-            elif hit_target:
-                outcome = 1
-            elif hit_break:
-                outcome = 0
-            else:
-                continue
-            features = {'prev_approaches': len(approaches[approaches.index < approach_date])}
-            instances.append({'features': features, 'label': outcome})
-    return instances
+                approaches = future_data[(future_data['high'] >= limit_price * 0.99) & (future_data['high'] <= limit_price * 1.01)]
+            for approach_date in approaches.index:
+                approach_price = df.loc[approach_date, 'close']
+                post_approach = df[df.index > approach_date]
+                if side == 'BUY':
+                    break_level = limit_price * 0.995
+                    target_level = approach_price * 1.02
+                    hit_break = (post_approach['low'] <= break_level).any()
+                    hit_target = (post_approach['high'] >= target_level).any()
+                else:
+                    break_level = limit_price * 1.005
+                    target_level = approach_price * 0.98
+                    hit_break = (post_approach['high'] >= break_level).any()
+                    hit_target = (post_approach['low'] <= target_level).any()
+                if hit_break and hit_target:
+                    break_idx = post_approach[post_approach['low'] <= break_level].index[0] if side == 'BUY' else post_approach[post_approach['high'] >= break_level].index[0]
+                    target_idx = post_approach[post_approach['high'] >= target_level].index[0] if side == 'BUY' else post_approach[post_approach['low'] <= target_level].index[0]
+                    outcome = 1 if target_idx < break_idx else 0
+                elif hit_target:
+                    outcome = 1
+                elif hit_break:
+                    outcome = 0
+                else:
+                    continue
+                features = {'prev_approaches': len(approaches[approaches.index < approach_date])}
+                instances.append({'features': features, 'label': outcome})
+        return instances
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error finding approaches and labels: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+        return []
 
 def train_model(instances):
-    if not instances:
+    try:
+        if not instances:
+            return None, 0
+        X = []
+        y = []
+        for inst in instances:
+            features = inst['features']
+            X.append([features.get('prev_approaches', 0)])
+            y.append(inst['label'])
+        if len(X) < 2:
+            return None, 0
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+        accuracy = model.score(X_test, y_test)
+        return model, accuracy
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error training model: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
         return None, 0
-    X = []
-    y = []
-    for inst in instances:
-        features = inst['features']
-        X.append([features.get('prev_approaches', 0)])
-        y.append(inst['label'])
-    if len(X) < 2:
-        return None, 0
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-    accuracy = model.score(X_test, y_test)
-    return model, accuracy
 
 def check_signals(df, zones, model, trade_log):
-    signals = []
-    for zone in zones:
-        limit_price = zone['level']
-        base_time = zone['date']
-        side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        last_candle = df.iloc[-1]
-        approach_condition = (last_candle['low'] >= limit_price * 0.99 and last_candle['low'] <= limit_price * 1.01) if side == 'BUY' else \
-                            (last_candle['high'] >= limit_price * 0.99 and last_candle['high'] <= limit_price * 1.01)
-        if approach_condition:
-            prev_approaches = len(df[(df.index > base_time) & (df.index < df.index[-1]) & 
-                                    (df['low' if side == 'BUY' else 'high'] >= limit_price * 0.99) & 
-                                    (df['low' if side == 'BUY' else 'high'] <= limit_price * 1.01)])
-            features = {'prev_approaches': prev_approaches}
-            pred_df = pd.DataFrame([features], columns=features.keys())
-            pred = model.predict(pred_df)[0]
-            pred_prob = model.predict_proba(pred_df)[0]
-            signal = 'Buy' if side == 'BUY' and pred == 1 else 'Sell' if side == 'SELL' and pred == 1 else 'Avoid'
-            signals.append({
-                'ticker': df.name,
-                'signal': signal,
-                'limit_price': limit_price,
-                'probability': pred_prob[1] if pred == 1 else pred_prob[0]
-            })
-    return signals
-
-def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
-    ax.clear()
-    df_plot = df.copy()
-    df_plot.index.name = 'Date'
-    mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
-    ax.set_title(f"{ticker} ({period}/{interval})", fontsize=12)
-    plot_zones(ax, df, super_zones, trade_log, super_zones=True)
-    trade_log.append(f"Rendered {len(super_zones)} super zones for {ticker} at {period}/{interval}")
-
-def plot_zones(ax, df, zones, trade_log, super_zones=False):
-    show_limit_lines = st.session_state.limit_lines
-    show_prices = st.session_state.show_prices
-    enable_ai = st.session_state.enable_ai
-
-    model, accuracy = None, None
-    if enable_ai and not super_zones:
-        instances = find_approaches_and_labels(df, zones)
-        model, accuracy = train_model(instances)
-
-    for zone in zones:
-        limit_price = zone['level']
-        base_time = zone['date']
-        side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        color = 'blue' if side == 'BUY' else 'red'
-        linewidth = 2 if super_zones else 1
-
-        if base_time not in df.index:
-            trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Date {base_time} not in DataFrame index")
-            continue
-
-        idx = df.index.get_loc(base_time)
-        if show_limit_lines:
-            ax.axhline(y=limit_price, color=color, linestyle='--', alpha=0.5, linewidth=linewidth)
-        if show_prices:
-            ax.text(len(df) - 1, limit_price, f'{limit_price:.2f}', ha='right', va='center', fontsize=12, color=color)
-
-        if enable_ai and model and not super_zones:
+    try:
+        signals = []
+        for zone in zones:
+            limit_price = zone['level']
+            base_time = zone['date']
+            side = 'BUY' if zone['type'] == 'demand' else 'SELL'
             last_candle = df.iloc[-1]
             approach_condition = (last_candle['low'] >= limit_price * 0.99 and last_candle['low'] <= limit_price * 1.01) if side == 'BUY' else \
                                 (last_candle['high'] >= limit_price * 0.99 and last_candle['high'] <= limit_price * 1.01)
@@ -327,17 +304,97 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
                 pred = model.predict(pred_df)[0]
                 pred_prob = model.predict_proba(pred_df)[0]
                 signal = 'Buy' if side == 'BUY' and pred == 1 else 'Sell' if side == 'SELL' and pred == 1 else 'Avoid'
-                trade_log.append(f"AI Signal: {signal} at {limit_price:.2f} (Accuracy: {accuracy:.2f}, Probs: {pred_prob})")
-                if show_prices:
-                    ax.text(len(df) - 1, limit_price + (limit_price * 0.005), f"{signal}", color=color, fontsize=12, ha='right')
+                signals.append({
+                    'ticker': df.name,
+                    'signal': signal,
+                    'limit_price': limit_price,
+                    'probability': pred_prob[1] if pred == 1 else pred_prob[0]
+                })
+        return signals
+    except Exception as e:
+        trade_log.append(f"Error checking signals: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+        return []
 
-        trade_log.append(f"{'Super ' if super_zones else ''}Zone: {side} at {limit_price:.2f}, Latest: {df['close'].iloc[-1]:.2f}")
+def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
+    try:
+        ax.clear()
+        df_plot = df.copy()
+        df_plot.index.name = 'Date'
+        mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
+        ax.set_title(f"{ticker} ({period}/{interval})", fontsize=12)
+        plot_zones(ax, df, super_zones, trade_log, super_zones=True)
+        trade_log.append(f"Rendered {len(super_zones)} super zones for {ticker} at {period}/{interval}")
+    except Exception as e:
+        trade_log.append(f"Error updating chart for {ticker} ({period}/{interval}): {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+
+def plot_zones(ax, df, zones, trade_log, super_zones=False):
+    try:
+        show_limit_lines = st.session_state.limit_lines
+        show_prices = st.session_state.show_prices
+        enable_ai = st.session_state.enable_ai
+
+        model, accuracy = None, None
+        if enable_ai and not super_zones:
+            instances = find_approaches_and_labels(df, zones)
+            model, accuracy = train_model(instances)
+
+        for zone in zones:
+            limit_price = zone['level']
+            base_time = zone['date']
+            side = 'BUY' if zone['type'] == 'demand' else 'SELL'
+            color = 'blue' if side == 'BUY' else 'red'
+            linewidth = 2 if super_zones else 1
+
+            if base_time not in df.index:
+                try:
+                    closest_idx = (df.index - base_time).abs().argmin()
+                    closest_date = df.index[closest_idx]
+                    trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
+                    base_time = closest_date
+                except Exception as e:
+                    trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
+                    continue
+
+            idx = df.index.get_loc(base_time)
+            if show_limit_lines:
+                ax.axhline(y=limit_price, color=color, linestyle='--', alpha=0.5, linewidth=linewidth)
+            if show_prices:
+                ax.text(len(df) - 1, limit_price, f'{limit_price:.2f}', ha='right', va='center', fontsize=12, color=color)
+
+            if enable_ai and model and not super_zones:
+                last_candle = df.iloc[-1]
+                approach_condition = (last_candle['low'] >= limit_price * 0.99 and last_candle['low'] <= limit_price * 1.01) if side == 'BUY' else \
+                                    (last_candle['high'] >= limit_price * 0.99 and last_candle['high'] <= limit_price * 1.01)
+                if approach_condition:
+                    prev_approaches = len(df[(df.index > base_time) & (df.index < df.index[-1]) & 
+                                            (df['low' if side == 'BUY' else 'high'] >= limit_price * 0.99) & 
+                                            (df['low' if side == 'BUY' else 'high'] <= limit_price * 1.01)])
+                    features = {'prev_approaches': prev_approaches}
+                    pred_df = pd.DataFrame([features], columns=features.keys())
+                    pred = model.predict(pred_df)[0]
+                    pred_prob = model.predict_proba(pred_df)[0]
+                    signal = 'Buy' if side == 'BUY' and pred == 1 else 'Sell' if side == 'SELL' and pred == 1 else 'Avoid'
+                    trade_log.append(f"AI Signal: {signal} at {limit_price:.2f} (Accuracy: {accuracy:.2f}, Probs: {pred_prob})")
+                    if show_prices:
+                        ax.text(len(df) - 1, limit_price + (limit_price * 0.005), f"{signal}", color=color, fontsize=12, ha='right')
+
+            trade_log.append(f"{'Super ' if super_zones else ''}Zone: {side} at {limit_price:.2f}, Latest: {df['close'].iloc[-1]:.2f}")
+    except Exception as e:
+        trade_log.append(f"Error plotting zones: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
 
 def save_chart(fig):
-    buf = BytesIO()
-    fig.savefig(buf, format="png")
-    buf.seek(0)
-    return buf
+    try:
+        buf = BytesIO()
+        fig.savefig(buf, format="png")
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error saving chart: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
+        return None
 
 def plot_chart(ticker, period=None, interval=None):
     try:
@@ -358,44 +415,47 @@ def plot_chart(ticker, period=None, interval=None):
         fig, ax = plt.subplots(figsize=(8, 4))
         update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
         buf = save_chart(fig)
-        plt.close(fig)  # Close figure to prevent memory issues
+        plt.close(fig)
         return fig, buf
-
     except Exception as e:
         st.session_state.trade_log.append(f"Error plotting {ticker}: {str(e)}")
-        traceback.print_exc()
+        traceback.print_exc(file=st._get_print_file())
         return None, None
 
 def plot_analysis_charts(ticker):
-    timeframes = [
-        {'period': '1y', 'interval': '1wk'},
-        {'period': '6mo', 'interval': '1wk'},
-        {'period': '6mo', 'interval': '1d'},
-        {'period': '3mo', 'interval': '1d'},
-        {'period': '1mo', 'interval': '1h'},
-        {'period': '1mo', 'interval': '30m'},
-        {'period': '5d', 'interval': '15m'},
-        {'period': '1d', 'interval': '5m'}
-    ]
+    try:
+        timeframes = [
+            {'period': '1y', 'interval': '1wk'},
+            {'period': '6mo', 'interval': '1wk'},
+            {'period': '6mo', 'interval': '1d'},
+            {'period': '3mo', 'interval': '1d'},
+            {'period': '1mo', 'interval': '1h'},
+            {'period': '1mo', 'interval': '30m'},
+            {'period': '5d', 'interval': '15m'},
+            {'period': '1d', 'interval': '5m'}
+        ]
 
-    st.session_state.trade_log.append(f"Plotting full analysis charts for {ticker}")
-    for tf in timeframes:
-        period = tf['period']
-        interval = tf['interval']
-        with st.container():
-            st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
-            fig, buf = plot_chart(ticker, period, interval)
-            if fig and buf:
-                st.pyplot(fig)
-                st.download_button(
-                    f"Save {period}/{interval} Chart",
-                    data=buf,
-                    file_name=f"{ticker}_{period}_{interval}_super_zones.png",
-                    mime="image/png",
-                    help=f"Download the {period}/{interval} chart for {ticker}"
-                )
-            else:
-                st.write(f"No data available for {period}/{interval}")
+        st.session_state.trade_log.append(f"Plotting full analysis charts for {ticker}")
+        for tf in timeframes:
+            period = tf['period']
+            interval = tf['interval']
+            with st.container():
+                st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
+                fig, buf = plot_chart(ticker, period, interval)
+                if fig and buf:
+                    st.pyplot(fig)
+                    st.download_button(
+                        f"Save {period}/{interval} Chart",
+                        data=buf,
+                        file_name=f"{ticker}_{period}_{interval}_super_zones.png",
+                        mime="image/png",
+                        help=f"Download the {period}/{interval} chart for {ticker}"
+                    )
+                else:
+                    st.write(f"No data available for {period}/{interval}")
+    except Exception as e:
+        st.session_state.trade_log.append(f"Error plotting analysis charts for {ticker}: {str(e)}")
+        traceback.print_exc(file=st._get_print_file())
 
 # Streamlit app
 def main():
@@ -457,6 +517,18 @@ def main():
             margin-bottom: 1rem;
         }
         </style>
+    """, unsafe_allow_html=True)
+
+    # JavaScript for copying trade log
+    st.markdown("""
+        <script>
+        function copyTradeLog() {
+            const textarea = document.querySelector('textarea');
+            textarea.select();
+            document.execCommand('copy');
+            alert('Trade log copied to clipboard!');
+        }
+        </script>
     """, unsafe_allow_html=True)
 
     # Initialize session state
@@ -565,7 +637,20 @@ def main():
 
     # Trade log
     with st.expander("Trade Log"):
-        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=150, disabled=True, help="View recent actions and errors")
+        trade_log_text = "\n".join(st.session_state.trade_log[-50:])
+        st.text_area("Log", value=trade_log_text, height=150, help="View recent actions and errors")
+        col_log1, col_log2 = st.columns(2)
+        with col_log1:
+            if st.button("Copy Log", help="Copy the trade log to clipboard"):
+                st.markdown(f'<button onclick="copyTradeLog()">Copy to Clipboard</button>', unsafe_allow_html=True)
+        with col_log2:
+            st.download_button(
+                "Download Log",
+                data=trade_log_text,
+                file_name="trade_log.txt",
+                mime="text/plain",
+                help="Download the trade log as a text file"
+            )
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
