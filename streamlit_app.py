@@ -178,56 +178,57 @@ def identify_super_zones(ticker, trade_log):
     trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
     return super_zones
 
-def calculate_super_zone_probability(ticker, super_zones, trade_log):
-    probabilities = []
-    mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
-    for sz in super_zones:
-        zone_level = sz['level']
-        zone_type = sz['type']
-        data = fetch_and_process_data([mapped_ticker], 'max', '1d', trade_log)
-        if mapped_ticker not in data:
-            continue
-        df = data[mapped_ticker]
-        instances = []
-        future_data = df[df.index > sz['date']]
-        if zone_type == 'demand':
-            approaches = future_data[(future_data['low'] >= zone_level * 0.99) & (future_data['low'] <= zone_level * 1.01)]
-        else:
-            approaches = future_data[(future_data['high'] >= zone_level * 0.99) & (future_data['high'] <= zone_level * 1.01)]
-        for approach_date in approaches.index:
-            approach_price = df.loc[approach_date, 'close']
-            post_approach = df[df.index > approach_date]
-            if zone_type == 'demand':
-                break_level = zone_level * 0.995
-                target_level = approach_price * 1.02
-                hit_break = (post_approach['low'] <= break_level).any()
-                hit_target = (post_approach['high'] >= target_level).any()
-            else:
-                break_level = zone_level * 1.005
-                target_level = approach_price * 0.98
-                hit_break = (post_approach['high'] >= break_level).any()
-                hit_target = (post_approach['low'] <= target_level).any()
-            if hit_break and hit_target:
-                break_idx = post_approach[post_approach['low'] <= break_level].index[0] if zone_type == 'demand' else post_approach[post_approach['high'] >= break_level].index[0]
-                target_idx = post_approach[post_approach['high'] >= target_level].index[0] if zone_type == 'demand' else post_approach[post_approach['low'] <= target_level].index[0]
-                outcome = 'held' if target_idx < break_idx else 'broke'
-            elif hit_target:
-                outcome = 'held'
-            elif hit_break:
-                outcome = 'broke'
-            else:
-                continue
-            instances.append({'outcome': outcome})
-        held_count = sum(1 for inst in instances if inst['outcome'] == 'held')
-        total = len(instances)
-        prob_held = (held_count / total * 100) if total > 0 else 0
-        probabilities.append({
-            'level': zone_level,
-            'type': zone_type,
-            'probability_held': prob_held,
-            'approaches': total
-        })
-    return probabilities
+# Commented out as probabilities are no longer displayed
+# def calculate_super_zone_probability(ticker, super_zones, trade_log):
+#     probabilities = []
+#     mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
+#     for sz in super_zones:
+#         zone_level = sz['level']
+#         zone_type = sz['type']
+#         data = fetch_and_process_data([mapped_ticker], 'max', '1d', trade_log)
+#         if mapped_ticker not in data:
+#             continue
+#         df = data[mapped_ticker]
+#         instances = []
+#         future_data = df[df.index > sz['date']]
+#         if zone_type == 'demand':
+#             approaches = future_data[(future_data['low'] >= zone_level * 0.99) & (future_data['low'] <= zone_level * 1.01)]
+#         else:
+#             approaches = future_data[(future_data['high'] >= zone_level * 0.99) & (future_data['high'] <= zone_level * 1.01)]
+#         for approach_date in approaches.index:
+#             approach_price = df.loc[approach_date, 'close']
+#             post_approach = df[df.index > approach_date]
+#             if zone_type == 'demand':
+#                 break_level = zone_level * 0.995
+#                 target_level = approach_price * 1.02
+#                 hit_break = (post_approach['low'] <= break_level).any()
+#                 hit_target = (post_approach['high'] >= target_level).any()
+#             else:
+#                 break_level = zone_level * 1.005
+#                 target_level = approach_price * 0.98
+#                 hit_break = (post_approach['high'] >= break_level).any()
+#                 hit_target = (post_approach['low'] <= target_level).any()
+#             if hit_break and hit_target:
+#                 break_idx = post_approach[post_approach['low'] <= break_level].index[0] if zone_type == 'demand' else post_approach[post_approach['high'] >= break_level].index[0]
+#                 target_idx = post_approach[post_approach['high'] >= target_level].index[0] if zone_type == 'demand' else post_approach[post_approach['low'] <= target_level].index[0]
+#                 outcome = 'held' if target_idx < break_idx else 'broke'
+#             elif hit_target:
+#                 outcome = 'held'
+#             elif hit_break:
+#                 outcome = 'broke'
+#             else:
+#                 continue
+#             instances.append({'outcome': outcome})
+#         held_count = sum(1 for inst in instances if inst['outcome'] == 'held')
+#         total = len(instances)
+#         prob_held = (held_count / total * 100) if total > 0 else 0
+#         probabilities.append({
+#             'level': zone_level,
+#             'type': zone_type,
+#             'probability_held': prob_held,
+#             'approaches': total
+#         })
+#     return probabilities
 
 def find_approaches_and_labels(df, zones):
     instances = []
@@ -385,19 +386,6 @@ def plot_chart(ticker, period=None, interval=None):
 
         df = data[mapped_ticker]
         super_zones = identify_super_zones(ticker, st.session_state.trade_log)
-        probabilities = calculate_super_zone_probability(ticker, super_zones, st.session_state.trade_log)
-
-        # Display probabilities as formatted text
-        if probabilities:
-            prob_text = f"**Super Zone Probabilities ({period}/{interval}):**\n"
-            for prob in probabilities:
-                prob_text += f"- **{prob['type'].capitalize()} Zone** at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)\n"
-                st.session_state.trade_log.append(
-                    f"Super Zone {prob['type']} at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)"
-                )
-            st.markdown(prob_text)
-        else:
-            st.markdown(f"**Super Zone Probabilities ({period}/{interval}):** No super zones found.")
 
         fig, ax = plt.subplots(figsize=(8, 4))
         update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
