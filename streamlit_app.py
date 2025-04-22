@@ -68,8 +68,15 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
             data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             data.set_index('Date', inplace=True)
-            # Normalize timestamps to tz-naive and round to interval
-            data.index = data.index.tz_localize(None).round(f"{interval.replace('m', 'min')}")
+            # Normalize timestamps to tz-naive and align to interval
+            data.index = data.index.tz_localize(None)
+            if interval in ['5m', '15m', '30m', '1h']:
+                # Create expected time range (e.g., 09:15 to 15:30 for NSE)
+                start_date = data.index.min().date()
+                end_date = data.index.max().date()
+                freq = interval.replace('m', 'min')
+                expected_times = pd.date_range(start=start_date, end=end_date, freq=freq, tz=None)
+                data = data.reindex(expected_times, method='ffill').dropna()
             trade_log.append(f"Fetched {len(data)} data points for {ticker}. First: {data.index[0]}, Last: {data.index[-1]}")
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
@@ -80,7 +87,7 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
 
 def identify_zones(df, interval):
     zones = []
-    window = 2 if interval == '5m' else 1  # Looser pivot detection for 5m
+    window = 3 if interval == '5m' else 1  # Looser pivot detection for 5m
     for i in range(window, len(df) - window):
         if all(df['low'].iloc[i] < df['low'].iloc[i-j] for j in range(1, window + 1)) and \
            all(df['low'].iloc[i] < df['low'].iloc[i+j] for j in range(1, window + 1)):
@@ -311,11 +318,12 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
 
         if base_time not in df.index:
             try:
-                closest_date = df.index[df.index.get_loc(base_time, method='nearest')]
+                closest_idx = (df.index - base_time).abs().argmin()
+                closest_date = df.index[closest_idx]
                 trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
                 base_time = closest_date
-            except KeyError:
-                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): No close date found")
+            except Exception as e:
+                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
                 continue
 
         idx = df.index.get_loc(base_time)
@@ -589,8 +597,18 @@ def main():
     with st.expander("Trade Log"):
         trade_log_text = "\n".join(st.session_state.trade_log[-50:])
         st.text_area("Log", value=trade_log_text, height=150, help="View recent actions and errors")
-        if st.button("Copy Log", help="Copy the trade log to clipboard"):
-            st.markdown(f'<button onclick="copyTradeLog()">Copy to Clipboard</button>', unsafe_allow_html=True)
+        col_log1, col_log2 = st.columns(2)
+        with col_log1:
+            if st.button("Copy Log", help="Copy the trade log to clipboard"):
+                st.markdown(f'<button onclick="copyTradeLog()">Copy to Clipboard</button>', unsafe_allow_html=True)
+        with col_log2:
+            st.download_button(
+                "Download Log",
+                data=trade_log_text,
+                file_name="trade_log.txt",
+                mime="text/plain",
+                help="Download the trade log as a text file"
+            )
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
