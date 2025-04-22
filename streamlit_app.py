@@ -50,8 +50,8 @@ display_mapping.update({ticker: ticker for ticker in [
     'ZYDUSLIFE'
 ]})
 
-# Fetch and process data with EMA and RSI
-def fetch_and_process_data(tickers, period, interval, use_ema, ema_period, use_rsi, trade_log):
+# Fetch and process data
+def fetch_and_process_data(tickers, period, interval, trade_log):
     all_data = {}
     for ticker in tickers:
         try:
@@ -69,23 +69,12 @@ def fetch_and_process_data(tickers, period, interval, use_ema, ema_period, use_r
             data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             data.set_index('Date', inplace=True)
             trade_log.append(f"Fetched {len(data)} data points for {ticker}")
-            if use_ema:
-                data['ema'] = data['close'].ewm(span=ema_period, adjust=False).mean()
-            if use_rsi:
-                data['rsi'] = compute_rsi(data['close'], 14)
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
             all_data[ticker] = data
         except Exception as e:
             trade_log.append(f"Error fetching data for {ticker}: {str(e)}")
     return all_data
-
-def compute_rsi(data, periods=14):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
 
 def identify_zones(df):
     zones = []
@@ -102,7 +91,8 @@ def identify_super_zones(ticker, trade_log):
         {'period': '1y', 'interval': '1wk'},
         {'period': '6mo', 'interval': '1wk'},
         {'period': '6mo', 'interval': '1d'},
-        {'period': '3mo', 'interval': '1d'}
+        {'period': '3mo', 'interval': '1d'},
+        {'period': '1mo', 'interval': '1h'}
     ]
     
     all_zones = []
@@ -111,7 +101,7 @@ def identify_super_zones(ticker, trade_log):
     for config in timeframe_configs:
         period = config['period']
         interval = config['interval']
-        data = fetch_and_process_data([mapped_ticker], period, interval, False, 20, False, trade_log)
+        data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
         if mapped_ticker in data:
             zones = identify_zones(data[mapped_ticker])
             for zone in zones:
@@ -139,8 +129,8 @@ def identify_super_zones(ticker, trade_log):
                     j += 1
             intervals = set(z['interval'] for z in cluster)
             has_weekly = '1wk' in intervals
-            has_daily = '1d' in intervals
-            if has_weekly and has_daily:
+            has_daily_or_hourly = '1d' in intervals or '1h' in intervals
+            if has_weekly and has_daily_or_hourly:
                 avg_level = np.mean([z['level'] for z in cluster])
                 super_zones.append({
                     'date': min(z['date'] for z in cluster),
@@ -160,7 +150,7 @@ def calculate_super_zone_probability(ticker, super_zones, trade_log):
     for sz in super_zones:
         zone_level = sz['level']
         zone_type = sz['type']
-        data = fetch_and_process_data([mapped_ticker], 'max', '1d', True, 20, True, trade_log)
+        data = fetch_and_process_data([mapped_ticker], 'max', '1d', trade_log)
         if mapped_ticker not in data:
             continue
         df = data[mapped_ticker]
@@ -205,7 +195,7 @@ def calculate_super_zone_probability(ticker, super_zones, trade_log):
         })
     return probabilities
 
-def find_approaches_and_labels(df, zones, use_ema, use_rsi):
+def find_approaches_and_labels(df, zones):
     instances = []
     for zone in zones:
         limit_price = zone['level']
@@ -240,23 +230,17 @@ def find_approaches_and_labels(df, zones, use_ema, use_rsi):
             else:
                 continue
             features = {'prev_approaches': len(approaches[approaches.index < approach_date])}
-            if use_ema:
-                features['ema'] = df.loc[approach_date, 'ema']
-            if use_rsi:
-                features['rsi'] = df.loc[approach_date, 'rsi']
             instances.append({'features': features, 'label': outcome})
     return instances
 
-def train_model(instances, use_ema, use_rsi):
+def train_model(instances):
     if not instances:
         return None, 0
     X = []
     y = []
     for inst in instances:
         features = inst['features']
-        X.append([features.get('prev_approaches', 0)] + 
-                 ([features.get('ema', 0)] if use_ema else []) + 
-                 ([features.get('rsi', 0)] if use_rsi else []))
+        X.append([features.get('prev_approaches', 0)])
         y.append(inst['label'])
     if len(X) < 2:
         return None, 0
@@ -266,7 +250,7 @@ def train_model(instances, use_ema, use_rsi):
     accuracy = model.score(X_test, y_test)
     return model, accuracy
 
-def check_signals(df, zones, model, use_ema, use_rsi, trade_log):
+def check_signals(df, zones, model, trade_log):
     signals = []
     for zone in zones:
         limit_price = zone['level']
@@ -280,10 +264,6 @@ def check_signals(df, zones, model, use_ema, use_rsi, trade_log):
                                     (df['low' if side == 'BUY' else 'high'] >= limit_price * 0.99) & 
                                     (df['low' if side == 'BUY' else 'high'] <= limit_price * 1.01)])
             features = {'prev_approaches': prev_approaches}
-            if use_ema:
-                features['ema'] = last_candle['ema']
-            if use_rsi:
-                features['rsi'] = last_candle['rsi']
             pred_df = pd.DataFrame([features], columns=features.keys())
             pred = model.predict(pred_df)[0]
             pred_prob = model.predict_proba(pred_df)[0]
@@ -296,32 +276,23 @@ def check_signals(df, zones, model, use_ema, use_rsi, trade_log):
             })
     return signals
 
-def update_chart(df, ax, ticker, use_ema, use_rsi, super_zones, trade_log):
+def update_chart(df, ax, ticker, super_zones, trade_log):
     ax.clear()
     df_plot = df.copy()
     df_plot.index.name = 'Date'
-    addplots = []
-    if use_ema and 'ema' in df_plot.columns:
-        addplots.append(mpf.make_addplot(df_plot['ema'], color='orange', label='EMA'))
-    if use_rsi and 'rsi' in df_plot.columns:
-        addplots.append(mpf.make_addplot(df_plot['rsi'], panel=1, color='purple', label='RSI', ylabel='RSI'))
-    mpf.plot(df_plot, type='candle', ax=ax, volume=False, addplot=addplots, style='classic')
+    mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
     ax.set_title(f"{ticker} ({st.session_state.period}/{st.session_state.interval})", fontsize=12)
     plot_zones(ax, df, super_zones, trade_log, super_zones=True)
 
 def plot_zones(ax, df, zones, trade_log, super_zones=False):
     show_limit_lines = st.session_state.limit_lines
-    show_mean_lines = st.session_state.mean_lines
     show_prices = st.session_state.show_prices
     enable_ai = st.session_state.enable_ai
-    use_ema = st.session_state.use_ema
-    use_rsi = st.session_state.use_rsi
-    ema_period = st.session_state.ema_period
 
     model, accuracy = None, None
     if enable_ai and not super_zones:
-        instances = find_approaches_and_labels(df, zones, use_ema, use_rsi)
-        model, accuracy = train_model(instances, use_ema, use_rsi)
+        instances = find_approaches_and_labels(df, zones)
+        model, accuracy = train_model(instances)
 
     for zone in zones:
         limit_price = zone['level']
@@ -337,8 +308,6 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
         idx = df.index.get_loc(base_time)
         if show_limit_lines:
             ax.axhline(y=limit_price, color=color, linestyle='--', alpha=0.5, linewidth=linewidth)
-        if show_mean_lines:
-            ax.axhline(y=limit_price, color='black', linestyle='--', linewidth=linewidth)
         if show_prices:
             ax.text(len(df) - 1, limit_price, f'{limit_price:.2f}', ha='right', va='center', fontsize=12, color=color)
 
@@ -351,10 +320,6 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
                                         (df['low' if side == 'BUY' else 'high'] >= limit_price * 0.99) & 
                                         (df['low' if side == 'BUY' else 'high'] <= limit_price * 1.01)])
                 features = {'prev_approaches': prev_approaches}
-                if use_ema:
-                    features['ema'] = last_candle['ema']
-                if use_rsi:
-                    features['rsi'] = last_candle['rsi']
                 pred_df = pd.DataFrame([features], columns=features.keys())
                 pred = model.predict(pred_df)[0]
                 pred_prob = model.predict_proba(pred_df)[0]
@@ -385,7 +350,7 @@ def main():
             font-size: 12px !important;
             padding: 5px 10px !important;
         }
-        .stTextInput input, .stSelectbox select, .stNumberInput input {
+        .stTextInput input, .stSelectbox select {
             font-size: 12px !important;
         }
         .stTextArea textarea {
@@ -403,20 +368,12 @@ def main():
         st.session_state.interval = "1d"
     if 'limit_lines' not in st.session_state:
         st.session_state.limit_lines = True
-    if 'mean_lines' not in st.session_state:
-        st.session_state.mean_lines = False
     if 'show_prices' not in st.session_state:
         st.session_state.show_prices = False
     if 'enable_ai' not in st.session_state:
         st.session_state.enable_ai = False
     if 'live_update' not in st.session_state:
         st.session_state.live_update = False
-    if 'use_ema' not in st.session_state:
-        st.session_state.use_ema = False
-    if 'ema_period' not in st.session_state:
-        st.session_state.ema_period = 20
-    if 'use_rsi' not in st.session_state:
-        st.session_state.use_rsi = False
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
     if 'show_sidebar' not in st.session_state:
@@ -450,25 +407,13 @@ def main():
             ['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo'], 
             index=['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo'].index(st.session_state.interval))
 
-    col4, col5, col6, col7, col8 = st.columns(5)
+    col4, col5, col6 = st.columns(3)
     with col4:
         st.session_state.limit_lines = st.checkbox("Limit Lines", value=st.session_state.limit_lines)
     with col5:
-        st.session_state.mean_lines = st.checkbox("Mean Lines", value=st.session_state.mean_lines)
-    with col6:
         st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices)
-    with col7:
+    with col6:
         st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai)
-    with col8:
-        st.session_state.live_update = st.checkbox("Live", value=st.session_state.live_update)
-
-    col9, col10, col11 = st.columns([1, 1, 1])
-    with col9:
-        st.session_state.use_ema = st.checkbox("EMA", value=st.session_state.use_ema)
-    with col10:
-        st.session_state.ema_period = st.number_input("EMA Period", min_value=1, value=st.session_state.ema_period, step=1)
-    with col11:
-        st.session_state.use_rsi = st.checkbox("RSI", value=st.session_state.use_rsi)
 
     if st.button("Plot"):
         if not st.session_state.ticker:
@@ -488,13 +433,10 @@ def plot_chart(ticker):
     try:
         period = st.session_state.period
         interval = st.session_state.interval
-        use_ema = st.session_state.use_ema
-        use_rsi = st.session_state.use_rsi
-        ema_period = st.session_state.ema_period
         mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
 
         st.session_state.trade_log.append(f"Plotting {ticker} (Period: {period}, Interval: {interval})")
-        data = fetch_and_process_data([mapped_ticker], period, interval, use_ema, ema_period, use_rsi, st.session_state.trade_log)
+        data = fetch_and_process_data([mapped_ticker], period, interval, st.session_state.trade_log)
         if mapped_ticker not in data:
             st.session_state.trade_log.append(f"No data for {ticker}")
             return
@@ -506,7 +448,7 @@ def plot_chart(ticker):
             st.session_state.trade_log.append(f"Super Zone {prob['type']} at {prob['level']:.2f}: {prob['probability_held']:.1f}% chance to hold ({prob['approaches']} approaches)")
 
         fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, use_ema, use_rsi, super_zones, st.session_state.trade_log)
+        update_chart(df, ax, ticker, super_zones, st.session_state.trade_log)
         st.pyplot(fig)
 
         # Save chart
