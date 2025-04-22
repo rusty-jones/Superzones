@@ -68,9 +68,9 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
             data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             data.set_index('Date', inplace=True)
-            # Normalize timestamps to tz-naive
-            data.index = data.index.tz_localize(None)
-            trade_log.append(f"Fetched {len(data)} data points for {ticker}")
+            # Normalize timestamps to tz-naive and round to interval
+            data.index = data.index.tz_localize(None).round(f"{interval.replace('m', 'min')}")
+            trade_log.append(f"Fetched {len(data)} data points for {ticker}. First: {data.index[0]}, Last: {data.index[-1]}")
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
             all_data[ticker] = data
@@ -78,12 +78,15 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             trade_log.append(f"Error fetching data for {ticker}: {str(e)}")
     return all_data
 
-def identify_zones(df):
+def identify_zones(df, interval):
     zones = []
-    for i in range(1, len(df) - 1):
-        if df['low'].iloc[i] < df['low'].iloc[i-1] and df['low'].iloc[i] < df['low'].iloc[i+1]:
+    window = 2 if interval == '5m' else 1  # Looser pivot detection for 5m
+    for i in range(window, len(df) - window):
+        if all(df['low'].iloc[i] < df['low'].iloc[i-j] for j in range(1, window + 1)) and \
+           all(df['low'].iloc[i] < df['low'].iloc[i+j] for j in range(1, window + 1)):
             zones.append({'date': df.index[i], 'type': 'demand', 'level': df['low'].iloc[i]})
-        if df['high'].iloc[i] > df['high'].iloc[i-1] and df['high'].iloc[i] > df['high'].iloc[i+1]:
+        if all(df['high'].iloc[i] > df['high'].iloc[i-j] for j in range(1, window + 1)) and \
+           all(df['high'].iloc[i] > df['high'].iloc[i+j] for j in range(1, window + 1)):
             zones.append({'date': df.index[i], 'type': 'supply', 'level': df['high'].iloc[i]})
     return zones
 
@@ -108,11 +111,13 @@ def identify_super_zones(ticker, trade_log):
         interval = config['interval']
         data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
         if mapped_ticker in data:
-            zones = identify_zones(data[mapped_ticker])
+            zones = identify_zones(data[mapped_ticker], interval)
             trade_log.append(f"Found {len(zones)} zones for {ticker} at {period}/{interval}")
             for zone in zones:
+                zone['date'] = zone['date'].round('5min')  # Round to match 5m intervals
                 zone['period'] = period
                 zone['interval'] = interval
+                trade_log.append(f"Zone at {zone['level']:.2f} ({zone['type']}) on {zone['date']} for {period}/{interval}")
             all_zones.extend(zones)
         else:
             trade_log.append(f"No data for {mapped_ticker} at {period}/{interval}")
@@ -181,14 +186,14 @@ def identify_super_zones(ticker, trade_log):
                     'intervals': list(intervals)
                 })
                 trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
-            # Check for 5d/15m + 1d/5m
-            if '15m' in intervals and '5m' in intervals:
+            # Check for 5d/15m + 1d/5m, or 15m alone as fallback
+            if '15m' in intervals or ('15m' in intervals and '5m' in intervals):
                 avg_level = np.mean([z['level'] for z in cluster])
                 super_zones.append({
                     'date': min(z['date'] for z in cluster),
                     'type': zone_type,
                     'level': avg_level,
-                    'periods': ['5d', '1d'],
+                    'periods': ['5d', '1d'] if '5m' in intervals else ['5d'],
                     'intervals': list(intervals)
                 })
                 trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
@@ -305,8 +310,13 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
         linewidth = 2 if super_zones else 1
 
         if base_time not in df.index:
-            trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Date {base_time} not in DataFrame index")
-            continue
+            try:
+                closest_date = df.index[df.index.get_loc(base_time, method='nearest')]
+                trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
+                base_time = closest_date
+            except KeyError:
+                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): No close date found")
+                continue
 
         idx = df.index.get_loc(base_time)
         if show_limit_lines:
@@ -358,7 +368,7 @@ def plot_chart(ticker, period=None, interval=None):
         fig, ax = plt.subplots(figsize=(8, 4))
         update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
         buf = save_chart(fig)
-        plt.close(fig)  # Close figure to prevent memory issues
+        plt.close(fig)
         return fig, buf
 
     except Exception as e:
@@ -457,6 +467,18 @@ def main():
             margin-bottom: 1rem;
         }
         </style>
+    """, unsafe_allow_html=True)
+
+    # JavaScript for copying trade log
+    st.markdown("""
+        <script>
+        function copyTradeLog() {
+            const textarea = document.querySelector('textarea');
+            textarea.select();
+            document.execCommand('copy');
+            alert('Trade log copied to clipboard!');
+        }
+        </script>
     """, unsafe_allow_html=True)
 
     # Initialize session state
@@ -565,7 +587,10 @@ def main():
 
     # Trade log
     with st.expander("Trade Log"):
-        st.text_area("Log", value="\n".join(st.session_state.trade_log[-50:]), height=150, disabled=True, help="View recent actions and errors")
+        trade_log_text = "\n".join(st.session_state.trade_log[-50:])
+        st.text_area("Log", value=trade_log_text, height=150, help="View recent actions and errors")
+        if st.button("Copy Log", help="Copy the trade log to clipboard"):
+            st.markdown(f'<button onclick="copyTradeLog()">Copy to Clipboard</button>', unsafe_allow_html=True)
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
