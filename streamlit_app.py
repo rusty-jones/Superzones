@@ -9,6 +9,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import numpy as np
 from io import BytesIO
+import sys
 
 warnings.filterwarnings("ignore", message="Series.__getitem__", category=FutureWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -77,13 +78,16 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
                 freq = interval.replace('m', 'min')
                 expected_times = pd.date_range(start=start_date, end=end_date, freq=freq, tz=None)
                 data = data.reindex(expected_times, method='ffill').dropna()
+                if data.empty:
+                    trade_log.append(f"Reindexing resulted in empty data for {ticker} ({period}/{interval})")
+                    continue
             trade_log.append(f"Fetched {len(data)} data points for {ticker}. First: {data.index[0]}, Last: {data.index[-1]}")
             data.dropna(inplace=True)
             trade_log.append(f"After processing, {len(data)} data points remain for {ticker}")
             all_data[ticker] = data
         except Exception as e:
             trade_log.append(f"Error fetching data for {ticker}: {str(e)}")
-            traceback.print_exc(file=st._get_print_file())
+            traceback.print_exc(file=sys.stderr)
     return all_data
 
 def identify_zones(df, interval):
@@ -97,10 +101,11 @@ def identify_zones(df, interval):
             if all(df['high'].iloc[i] > df['high'].iloc[i-j] for j in range(1, window + 1)) and \
                all(df['high'].iloc[i] > df['high'].iloc[i+j] for j in range(1, window + 1)):
                 zones.append({'date': df.index[i], 'type': 'supply', 'level': df['high'].iloc[i]})
+        trade_log.append(f"Identified {len(zones)} zones for interval {interval}")
         return zones
     except Exception as e:
         st.session_state.trade_log.append(f"Error identifying zones for interval {interval}: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return []
 
 def identify_super_zones(ticker, trade_log):
@@ -217,7 +222,7 @@ def identify_super_zones(ticker, trade_log):
         return super_zones
     except Exception as e:
         trade_log.append(f"Error identifying super zones for {ticker}: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return []
 
 def find_approaches_and_labels(df, zones):
@@ -260,7 +265,7 @@ def find_approaches_and_labels(df, zones):
         return instances
     except Exception as e:
         st.session_state.trade_log.append(f"Error finding approaches and labels: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return []
 
 def train_model(instances):
@@ -282,7 +287,7 @@ def train_model(instances):
         return model, accuracy
     except Exception as e:
         st.session_state.trade_log.append(f"Error training model: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return None, 0
 
 def check_signals(df, zones, model, trade_log):
@@ -313,7 +318,7 @@ def check_signals(df, zones, model, trade_log):
         return signals
     except Exception as e:
         trade_log.append(f"Error checking signals: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return []
 
 def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
@@ -327,7 +332,7 @@ def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
         trade_log.append(f"Rendered {len(super_zones)} super zones for {ticker} at {period}/{interval}")
     except Exception as e:
         trade_log.append(f"Error updating chart for {ticker} ({period}/{interval}): {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
 
 def plot_zones(ax, df, zones, trade_log, super_zones=False):
     try:
@@ -347,15 +352,19 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             color = 'blue' if side == 'BUY' else 'red'
             linewidth = 2 if super_zones else 1
 
-            if base_time not in df.index:
-                try:
-                    closest_idx = (df.index - base_time).abs().argmin()
-                    closest_date = df.index[closest_idx]
-                    trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
-                    base_time = closest_date
-                except Exception as e:
-                    trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
-                    continue
+            if not df.index.empty:
+                if base_time not in df.index:
+                    try:
+                        closest_idx = (df.index - base_time).abs().argmin()
+                        closest_date = df.index[closest_idx]
+                        trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
+                        base_time = closest_date
+                    except Exception as e:
+                        trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
+                        continue
+            else:
+                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Empty DataFrame index")
+                continue
 
             idx = df.index.get_loc(base_time)
             if show_limit_lines:
@@ -383,7 +392,7 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             trade_log.append(f"{'Super ' if super_zones else ''}Zone: {side} at {limit_price:.2f}, Latest: {df['close'].iloc[-1]:.2f}")
     except Exception as e:
         trade_log.append(f"Error plotting zones: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
 
 def save_chart(fig):
     try:
@@ -393,7 +402,7 @@ def save_chart(fig):
         return buf
     except Exception as e:
         st.session_state.trade_log.append(f"Error saving chart: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
         return None
 
 def plot_chart(ticker, period=None, interval=None):
@@ -402,28 +411,50 @@ def plot_chart(ticker, period=None, interval=None):
         period = period or st.session_state.period
         interval = interval or st.session_state.interval
         mapped_ticker = ticker_mapping.get(ticker.lower(), ticker)
+        trade_log = st.session_state.trade_log
 
-        st.session_state.trade_log.append(f"Plotting {ticker} (Period: {period}, Interval: {interval})")
-        data = fetch_and_process_data([mapped_ticker], period, interval, st.session_state.trade_log)
+        trade_log.append(f"Starting plot for {ticker} (Period: {period}, Interval: {interval})")
+        
+        # Validate ticker
+        if not mapped_ticker:
+            trade_log.append(f"Invalid ticker: {ticker}")
+            return None, None
+
+        # Fetch data
+        trade_log.append(f"Fetching data for {ticker}")
+        data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
         if mapped_ticker not in data:
-            st.session_state.trade_log.append(f"No data for {ticker}")
+            trade_log.append(f"No data for {ticker}")
             return None, None
 
         df = data[mapped_ticker]
-        super_zones = identify_super_zones(ticker, st.session_state.trade_log)
+        trade_log.append(f"Data fetched for {ticker}: {len(df)} rows")
 
+        # Identify super zones
+        trade_log.append(f"Identifying super zones for {ticker}")
+        super_zones = identify_super_zones(ticker, trade_log)
+        trade_log.append(f"Found {len(super_zones)} super zones")
+
+        # Create and update chart
+        trade_log.append(f"Creating chart for {ticker}")
         fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, super_zones, st.session_state.trade_log, period, interval)
+        update_chart(df, ax, ticker, super_zones, trade_log, period, interval)
+        
+        # Save chart
+        trade_log.append(f"Saving chart for {ticker}")
         buf = save_chart(fig)
         plt.close(fig)
+        
+        trade_log.append(f"Plot completed for {ticker}")
         return fig, buf
     except Exception as e:
-        st.session_state.trade_log.append(f"Error plotting {ticker}: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        trade_log.append(f"Error plotting {ticker}: {str(e)}")
+        traceback.print_exc(file=sys.stderr)
         return None, None
 
 def plot_analysis_charts(ticker):
     try:
+        trade_log = st.session_state.trade_log
         timeframes = [
             {'period': '1y', 'interval': '1wk'},
             {'period': '6mo', 'interval': '1wk'},
@@ -435,12 +466,13 @@ def plot_analysis_charts(ticker):
             {'period': '1d', 'interval': '5m'}
         ]
 
-        st.session_state.trade_log.append(f"Plotting full analysis charts for {ticker}")
+        trade_log.append(f"Plotting full analysis charts for {ticker}")
         for tf in timeframes:
             period = tf['period']
             interval = tf['interval']
             with st.container():
                 st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
+                trade_log.append(f"Generating chart for {ticker} ({period}/{interval})")
                 fig, buf = plot_chart(ticker, period, interval)
                 if fig and buf:
                     st.pyplot(fig)
@@ -453,9 +485,10 @@ def plot_analysis_charts(ticker):
                     )
                 else:
                     st.write(f"No data available for {period}/{interval}")
+                    trade_log.append(f"Failed to generate chart for {ticker} ({period}/{interval})")
     except Exception as e:
         st.session_state.trade_log.append(f"Error plotting analysis charts for {ticker}: {str(e)}")
-        traceback.print_exc(file=st._get_print_file())
+        traceback.print_exc(file=sys.stderr)
 
 # Streamlit app
 def main():
@@ -572,10 +605,16 @@ def main():
                     st.session_state.ticker = stock
                     st.session_state.trade_log.append(f"Selected {stock}")
                     # Auto-plot on ticker click
-                    fig, buf = plot_chart(stock)
-                    if fig and buf:
-                        st.session_state.main_fig = fig
-                        st.session_state.main_buf = buf
+                    try:
+                        fig, buf = plot_chart(stock)
+                        if fig and buf:
+                            st.session_state.main_fig = fig
+                            st.session_state.main_buf = buf
+                        else:
+                            st.session_state.trade_log.append(f"Failed to plot chart for {stock}")
+                    except Exception as e:
+                        st.session_state.trade_log.append(f"Error in sidebar plot for {stock}: {str(e)}")
+                        traceback.print_exc(file=sys.stderr)
 
     # Main area
     st.title("Stock Charting Tool")
@@ -613,10 +652,16 @@ def main():
             if not st.session_state.ticker:
                 st.session_state.trade_log.append("No ticker specified")
             else:
-                fig, buf = plot_chart(st.session_state.ticker)
-                if fig and buf:
-                    st.session_state.main_fig = fig
-                    st.session_state.main_buf = buf
+                try:
+                    fig, buf = plot_chart(st.session_state.ticker)
+                    if fig and buf:
+                        st.session_state.main_fig = fig
+                        st.session_state.main_buf = buf
+                    else:
+                        st.session_state.trade_log.append(f"Failed to plot chart for {st.session_state.ticker}")
+                except Exception as e:
+                    st.session_state.trade_log.append(f"Error in main plot for {st.session_state.ticker}: {str(e)}")
+                    traceback.print_exc(file=sys.stderr)
     with col8:
         if st.button("View Full Analysis", help="Show charts for multiple timeframes"):
             if not st.session_state.ticker:
@@ -654,10 +699,14 @@ def main():
 
     # Live update simulation
     if st.session_state.live_update and st.session_state.ticker:
-        fig, buf = plot_chart(st.session_state.ticker)
-        if fig and buf:
-            st.session_state.main_fig = fig
-            st.session_state.main_buf = buf
+        try:
+            fig, buf = plot_chart(st.session_state.ticker)
+            if fig and buf:
+                st.session_state.main_fig = fig
+                st.session_state.main_buf = buf
+        except Exception as e:
+            st.session_state.trade_log.append(f"Error in live update for {st.session_state.ticker}: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
 
 if __name__ == "__main__":
     main()
