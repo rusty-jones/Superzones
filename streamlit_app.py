@@ -78,7 +78,7 @@ def fetch_and_process_data(tickers, period, interval, trade_log):
             trade_log.append(f"Error fetching data for {ticker}: {str(e)}")
     return all_data
 
-def identify_zones(df, interval):
+def identify_zones(df, interval, trade_log):
     try:
         zones = []
         window = 3 if interval == '5m' else 1
@@ -92,7 +92,7 @@ def identify_zones(df, interval):
         trade_log.append(f"Identified {len(zones)} zones for interval {interval}")
         return zones
     except Exception as e:
-        st.session_state.trade_log.append(f"Error identifying zones for interval {interval}: {str(e)}")
+        trade_log.append(f"Error identifying zones for interval {interval}: {str(e)}")
         return []
 
 def identify_super_zones(ticker, trade_log):
@@ -117,7 +117,7 @@ def identify_super_zones(ticker, trade_log):
             interval = config['interval']
             data = fetch_and_process_data([mapped_ticker], period, interval, trade_log)
             if mapped_ticker in data:
-                zones = identify_zones(data[mapped_ticker], interval)
+                zones = identify_zones(data[mapped_ticker], interval, trade_log)
                 trade_log.append(f"Found {len(zones)} zones for {ticker} at {period}/{interval}")
                 for zone in zones:
                     zone['date'] = zone['date'].round('5min')
