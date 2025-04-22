@@ -105,9 +105,7 @@ def identify_super_zones(ticker, trade_log):
             {'period': '6mo', 'interval': '1d'},
             {'period': '3mo', 'interval': '1d'},
             {'period': '1mo', 'interval': '1h'},
-            {'period': '1mo', 'interval': '30m'},
-            {'period': '5d', 'interval': '15m'},
-            {'period': '1d', 'interval': '5m'}
+            {'period': '1mo', 'interval': '30m'}
         ]
         
         all_zones = []
@@ -149,7 +147,7 @@ def identify_super_zones(ticker, trade_log):
                         j += 1
                 intervals = set(z['interval'] for z in cluster)
                 has_weekly = '1wk' in intervals
-                has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals or '15m' in intervals or '5m' in intervals
+                has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals
                 if has_weekly and has_daily_or_shorter:
                     avg_level = np.mean([z['level'] for z in cluster])
                     super_zones.append({
@@ -162,8 +160,8 @@ def identify_super_zones(ticker, trade_log):
                     trade_log.append(f"Super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
                 i += 1
         
-        # Step 2: Intraday super zones (1mo/1h + 1mo/30m, 5d/15m + 1d/5m)
-        intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m', '15m', '5m']]
+        # Step 2: Intraday super zones (1mo/1h + 1mo/30m)
+        intraday_zones = [z for z in all_zones if z['interval'] in ['1h', '30m']]
         intraday_demand = [z for z in intraday_zones if z['type'] == 'demand']
         intraday_supply = [z for z in intraday_zones if z['type'] == 'supply']
         
@@ -182,7 +180,6 @@ def identify_super_zones(ticker, trade_log):
                     else:
                         j += 1
                 intervals = set(z['interval'] for z in cluster)
-                # 1mo/1h + 1mo/30m
                 if '1h' in intervals and '30m' in intervals:
                     avg_level = np.mean([z['level'] for z in cluster])
                     super_zones.append({
@@ -193,37 +190,10 @@ def identify_super_zones(ticker, trade_log):
                         'intervals': list(intervals)
                     })
                     trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
-                # 5d/15m + 1d/5m
-                if '15m' in intervals and '5m' in intervals:
-                    avg_level = np.mean([z['level'] for z in cluster])
-                    super_zones.append({
-                        'date': min(z['date'] for z in cluster),
-                        'type': zone_type,
-                        'level': avg_level,
-                        'periods': ['5d', '1d'],
-                        'intervals': list(intervals)
-                    })
-                    trade_log.append(f"Intraday super zone {zone_type} at {avg_level:.2f} with intervals {list(intervals)}")
                 i += 1
         
-        # Step 3: Deduplicate super zones by level, preserving interval groups
-        dedup_zones = []
-        seen_levels = {}
-        for zone in sorted(super_zones, key=lambda x: x['level']):
-            level = round(zone['level'], 2)
-            interval_key = tuple(sorted(zone['intervals']))
-            key = (level, interval_key)
-            if key in seen_levels:
-                existing = seen_levels[key]
-                existing['periods'] = list(set(existing['periods'] + zone['periods']))
-                existing['date'] = min(existing['date'], zone['date'])
-                trade_log.append(f"Deduplicated zone at {level:.2f} ({zone['type']}) with intervals {interval_key}")
-            else:
-                seen_levels[key] = zone
-                dedup_zones.append(zone)
-        
-        trade_log.append(f"Found {len(dedup_zones)} super zones for {ticker} after deduplication")
-        return dedup_zones
+        trade_log.append(f"Found {len(super_zones)} super zones for {ticker}")
+        return super_zones
     except Exception as e:
         trade_log.append(f"Error identifying super zones for {ticker}: {str(e)}")
         return []
@@ -344,9 +314,6 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             instances = find_approaches_and_labels(df, zones)
             model, accuracy = train_model(instances)
 
-        chart_start = df.index.min()
-        max_date_shift = timedelta(days=5) if '1d' in st.session_state.period else timedelta(days=30)
-
         for zone in zones:
             limit_price = zone['level']
             base_time = zone['date']
@@ -354,23 +321,13 @@ def plot_zones(ax, df, zones, trade_log, super_zones=False):
             color = 'blue' if side == 'BUY' else 'red'
             linewidth = 2 if super_zones else 1
 
-            if abs(base_time - chart_start) > max_date_shift:
-                trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Date {base_time} too far from chart start {chart_start}")
-                continue
-
             if base_time not in df.index:
                 try:
-                    time_diffs = abs(df.index - base_time)
-                    closest_idx = time_diffs.argmin()
-                    closest_date = df.index[closest_idx]
-                    if abs(closest_date - base_time) <= max_date_shift:
-                        trade_log.append(f"Adjusting zone date from {base_time} to {closest_date} for {limit_price:.2f} ({side})")
-                        base_time = closest_date
-                    else:
-                        trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): Adjusted date {closest_date} too far from {base_time}")
-                        continue
+                    closest_idx = (df.index - base_time).abs().argmin()
+                    base_time = df.index[closest_idx]
+                    trade_log.append(f"Adjusting zone date to {base_time} for {limit_price:.2f} ({side})")
                 except Exception as e:
-                    trade_log.append(f"Skipping {'Super ' if super_zones else ''}Zone at {limit_price:.2f} ({side}): {str(e)}")
+                    trade_log.append(f"Error adjusting zone date for {limit_price:.2f} ({side}): {str(e)}")
                     continue
 
             idx = df.index.get_loc(base_time)
@@ -436,21 +393,9 @@ def plot_chart(ticker, period=None, interval=None):
         super_zones = identify_super_zones(ticker, trade_log)
         trade_log.append(f"Found {len(super_zones)} super zones")
 
-        # Filter super zones based on chart timeframe
-        relevant_zones = []
-        if period in ['1d', '5d'] and interval in ['5m', '15m']:
-            relevant_zones = [z for z in super_zones if set(['15m', '5m']).issubset(z['intervals'])]
-            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (15m+5m)")
-        elif period == '1mo' and interval in ['1h', '30m']:
-            relevant_zones = [z for z in super_zones if sorted(z['intervals']) == ['1h', '30m']]
-            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (1h+30m only)")
-        else:
-            relevant_zones = [z for z in super_zones if '1wk' in z['intervals'] or '1d' in z['intervals']]
-            trade_log.append(f"Filtered to {len(relevant_zones)} super zones for {period}/{interval} (weekly/daily)")
-
         trade_log.append(f"Creating chart for {ticker}")
         fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, relevant_zones, trade_log, period, interval)
+        update_chart(df, ax, ticker, super_zones, trade_log, period, interval)
         
         trade_log.append(f"Saving chart for {ticker}")
         buf = save_chart(fig)
@@ -471,9 +416,7 @@ def plot_analysis_charts(ticker):
             {'period': '6mo', 'interval': '1d'},
             {'period': '3mo', 'interval': '1d'},
             {'period': '1mo', 'interval': '1h'},
-            {'period': '1mo', 'interval': '30m'},
-            {'period': '5d', 'interval': '15m'},
-            {'period': '1d', 'interval': '5m'}
+            {'period': '1mo', 'interval': '30m'}
         ]
 
         trade_log.append(f"Plotting full analysis charts for {ticker}")
