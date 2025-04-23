@@ -571,12 +571,15 @@ def main():
         st.session_state.show_sidebar = True
     if 'search' not in st.session_state:
         st.session_state.search = ""
+    if 'show_main_chart' not in st.session_state:
+        st.session_state.show_main_chart = False
 
     # Top navigation buttons
     col_home, col_contact = st.columns(2)
     with col_home:
         if st.button("Home", help="Return to the main page"):
             st.session_state.ticker = ""
+            st.session_state.show_main_chart = False
             st.session_state.trade_log.append("Clicked Home, resetting ticker")
             st.rerun()
     with col_contact:
@@ -599,6 +602,7 @@ def main():
             for stock in sorted(filtered_tickers):
                 if st.button(display_mapping[stock], key=stock, help=f"View chart for {display_mapping[stock]}"):
                     st.session_state.ticker = stock
+                    st.session_state.show_main_chart = True
                     st.session_state.trade_log.append(f"Selected {stock}")
                     try:
                         fig, buf = plot_chart(stock)
@@ -646,6 +650,7 @@ def main():
                 st.session_state.trade_log.append("No ticker specified")
             else:
                 try:
+                    st.session_state.show_main_chart = True
                     fig, buf = plot_chart(st.session_state.ticker)
                     if fig and buf:
                         st.session_state.main_fig = fig
@@ -659,10 +664,14 @@ def main():
             if not st.session_state.ticker:
                 st.session_state.trade_log.append("No ticker specified")
             else:
-                plot_analysis_charts(st.session_state.ticker)
+                try:
+                    st.session_state.show_main_chart = False
+                    plot_analysis_charts(st.session_state.ticker)
+                except Exception as e:
+                    st.session_state.trade_log.append(f"Error in full analysis for {st.session_state.ticker}: {str(e)}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if 'main_fig' in st.session_state and st.session_state.main_fig:
+    if st.session_state.show_main_chart and 'main_fig' in st.session_state and st.session_state.main_fig:
         st.pyplot(st.session_state.main_fig)
         st.download_button(
             "Save Chart",
@@ -688,7 +697,7 @@ def main():
                 help="Download the trade log as a text file"
             )
 
-    if st.session_state.live_update and st.session_state.ticker:
+    if st.session_state.live_update and st.session_state.ticker and st.session_state.show_main_chart:
         try:
             fig, buf = plot_chart(st.session_state.ticker)
             if fig and buf:
