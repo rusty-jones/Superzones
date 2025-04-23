@@ -291,15 +291,15 @@ def check_signals(df, zones, model, trade_log):
         trade_log.append(f"Error checking signals: {str(e)}")
         return []
 
-def update_chart(df, ax, ticker, zones, trade_log, period, interval, super_zones=False):
+def update_chart(df, ax, ticker, super_zones, trade_log, period, interval):
     try:
         ax.clear()
         df_plot = df.copy()
         df_plot.index.name = 'Date'
         mpf.plot(df_plot, type='candle', ax=ax, volume=False, style='classic')
         ax.set_title(f"{ticker} ({period}/{interval})", fontsize=12)
-        plot_zones(ax, df, zones, trade_log, super_zones=super_zones)
-        trade_log.append(f"Rendered {len(zones)} {'super ' if super_zones else ''}zones for {ticker} at {period}/{interval}")
+        plot_zones(ax, df, super_zones, trade_log, super_zones=True)
+        trade_log.append(f"Rendered {len(super_zones)} super zones for {ticker} at {period}/{interval}")
     except Exception as e:
         trade_log.append(f"Error updating chart for {ticker} ({period}/{interval}): {str(e)}")
 
@@ -389,21 +389,13 @@ def plot_chart(ticker, period=None, interval=None):
         df = data[mapped_ticker]
         trade_log.append(f"Data fetched for {ticker}: {len(df)} rows")
 
-        # Use normal zones for 5d/15m and 1d/5m, super zones for others
-        if period in ['1d', '5d'] and interval in ['5m', '15m']:
-            trade_log.append(f"Identifying normal zones for {ticker} at {period}/{interval}")
-            zones = identify_zones(df, interval, trade_log)
-            trade_log.append(f"Found {len(zones)} normal zones")
-            super_zones = False
-        else:
-            trade_log.append(f"Identifying super zones for {ticker}")
-            zones = identify_super_zones(ticker, trade_log)
-            trade_log.append(f"Found {len(zones)} super zones")
-            super_zones = True
+        trade_log.append(f"Identifying super zones for {ticker}")
+        super_zones = identify_super_zones(ticker, trade_log)
+        trade_log.append(f"Found {len(super_zones)} super zones")
 
         trade_log.append(f"Creating chart for {ticker}")
         fig, ax = plt.subplots(figsize=(8, 4))
-        update_chart(df, ax, ticker, zones, trade_log, period, interval, super_zones=super_zones)
+        update_chart(df, ax, ticker, super_zones, trade_log, period, interval)
         
         trade_log.append(f"Saving chart for {ticker}")
         buf = save_chart(fig)
@@ -424,9 +416,7 @@ def plot_analysis_charts(ticker):
             {'period': '6mo', 'interval': '1d'},
             {'period': '3mo', 'interval': '1d'},
             {'period': '1mo', 'interval': '1h'},
-            {'period': '1mo', 'interval': '30m'},
-            {'period': '5d', 'interval': '15m'},
-            {'period': '1d', 'interval': '5m'}
+            {'period': '1mo', 'interval': '30m'}
         ]
 
         trade_log.append(f"Plotting full analysis charts for {ticker}")
@@ -442,7 +432,7 @@ def plot_analysis_charts(ticker):
                     st.download_button(
                         f"Save {period}/{interval} Chart",
                         data=buf,
-                        file_name=f"{ticker}_{period}_{interval}_zones.png",
+                        file_name=f"{ticker}_{period}_{interval}_super_zones.png",
                         mime="image/png",
                         help=f"Download the {period}/{interval} chart for {ticker}"
                     )
@@ -584,9 +574,9 @@ def main():
 
     col4, col5, col6 = st.columns(3)
     with col4:
-        st.session_state.limit_lines = st.checkbox("Limit Lines", value=st.session_state.limit_lines, help="Show horizontal lines for zones")
+        st.session_state.limit_lines = st.checkbox("Limit Lines", value=st.session_state.limit_lines, help="Show horizontal lines for super zones")
     with col5:
-        st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices, help="Show price levels for zones")
+        st.session_state.show_prices = st.checkbox("Prices", value=st.session_state.show_prices, help="Show price levels for super zones")
     with col6:
         st.session_state.enable_ai = st.checkbox("AI", value=st.session_state.enable_ai, help="Enable AI-based signal predictions")
 
@@ -619,7 +609,7 @@ def main():
         st.download_button(
             "Save Chart",
             data=st.session_state.main_buf,
-            file_name=f"{st.session_state.ticker}_zones.png",
+            file_name=f"{st.session_state.ticker}_super_zones.png",
             mime="image/png",
             help="Download the main chart"
         )
