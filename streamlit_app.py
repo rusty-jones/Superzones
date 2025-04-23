@@ -141,10 +141,10 @@ def identify_super_zones(ticker, trade_log):
                     avg_level = np.mean([z['level'] for z in cluster])
                     threshold = 0.015 if '5m' in [z['interval'] for z in cluster] else 0.01
                     if abs(zones[j]['level'] - avg_level) <= avg_level * threshold:
-                    cluster.append(zones[j])
-                    zones.pop(j)
-                else:
-                    j += 1
+                        cluster.append(zones[j])
+                        zones.pop(j)
+                    else:
+                        j += 1
                 intervals = set(z['interval'] for z in cluster)
                 has_weekly = '1wk' in intervals
                 has_daily_or_shorter = '1d' in intervals or '1h' in intervals or '30m' in intervals
