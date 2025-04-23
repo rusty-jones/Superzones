@@ -462,22 +462,21 @@ def plot_analysis_charts(ticker):
         for tf in timeframes:
             period = tf['period']
             interval = tf['interval']
-            with st.container():
-                st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
-                trade_log.append(f"Generating chart for {ticker} ({period}/{interval})")
-                fig, buf = plot_chart(ticker, period, interval)
-                if fig and buf:
-                    st.pyplot(fig)
-                    st.download_button(
-                        f"Save {period}/{interval} Chart",
-                        data=buf,
-                        file_name=f"{ticker}_{period}_{interval}_super_zones.png",
-                        mime="image/png",
-                        help=f"Download the {period}/{interval} chart for {ticker}"
-                    )
-                else:
-                    st.write(f"No data available for {period}/{interval}")
-                    trade_log.append(f"Failed to generate chart for {ticker} ({period}/{interval})")
+            st.subheader(f"{ticker} ({period}/{interval})", anchor=False)
+            trade_log.append(f"Generating chart for {ticker} ({period}/{interval})")
+            fig, buf = plot_chart(ticker, period, interval)
+            if fig and buf:
+                st.pyplot(fig)
+                st.download_button(
+                    f"Save {period}/{interval} Chart",
+                    data=buf,
+                    file_name=f"{ticker}_{period}_{interval}_super_zones.png",
+                    mime="image/png",
+                    help=f"Download the {period}/{interval} chart for {ticker}"
+                )
+            else:
+                st.write(f"No data available for {period}/{interval}")
+                trade_log.append(f"Failed to generate chart for {ticker} ({period}/{interval})")
     except Exception as e:
         st.session_state.trade_log.append(f"Error plotting analysis charts for {ticker}: {str(e)}")
 
@@ -503,8 +502,8 @@ def main():
             margin-bottom: 0.5rem;
         }
         .stButton>button {
-            font-size: 12px !important;
-            padding: 6px 12px !important;
+            font-size: 14px !important;
+            padding: 8px 16px !important;
             border-radius: 5px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             margin: 0 5px;
@@ -532,6 +531,11 @@ def main():
         .stExpander {
             border-radius: 5px;
             margin-bottom: 1rem;
+        }
+        .center-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -568,10 +572,22 @@ def main():
     if 'search' not in st.session_state:
         st.session_state.search = ""
 
+    # Top navigation buttons
+    col_home, col_contact = st.columns(2)
+    with col_home:
+        if st.button("Home", help="Return to the main page"):
+            st.session_state.ticker = ""
+            st.session_state.trade_log.append("Clicked Home, resetting ticker")
+            st.rerun()
+    with col_contact:
+        st.markdown('<a href="mailto:support@example.com"><button>Contact Me</button></a>', unsafe_allow_html=True)
+
     with st.sidebar:
         st.subheader("Select Stock")
-        if st.button("Toggle Sidebar", help="Show or hide the stock selection panel"):
+        button_label = "Show Stock List" if not st.session_state.show_sidebar else "Hide Stock List"
+        if st.button(button_label, help="Show or hide the stock selection panel"):
             st.session_state.show_sidebar = not st.session_state.show_sidebar
+            st.session_state.trade_log.append(f"Toggled sidebar to {button_label}")
 
         if st.session_state.show_sidebar:
             st.text_input("Search Stocks", key="search", placeholder="e.g., Nifty, RELIANCE", help="Filter stocks by name")
@@ -621,7 +637,9 @@ def main():
 
     st.divider()
 
-    col7, col8, col9 = st.columns([1, 1, 3])
+    # Center-aligned Plot and View Full Analysis buttons
+    st.markdown('<div class="center-buttons">', unsafe_allow_html=True)
+    col7, col8 = st.columns([1, 1])
     with col7:
         if st.button("Plot", help="Generate chart for the selected ticker"):
             if not st.session_state.ticker:
@@ -642,6 +660,7 @@ def main():
                 st.session_state.trade_log.append("No ticker specified")
             else:
                 plot_analysis_charts(st.session_state.ticker)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if 'main_fig' in st.session_state and st.session_state.main_fig:
         st.pyplot(st.session_state.main_fig)
