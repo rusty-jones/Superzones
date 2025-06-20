@@ -53,11 +53,18 @@ def fetch_and_process_data(tickers, periods_intervals):
         for period, intervals in periods_intervals.items():
             for interval in intervals:
                 data = yf.download(ticker, period=period, interval=interval)
+                st.session_state.trade_log.append(f"Fetched data for {ticker} ({period}, {interval}): Index type={type(data.index)}, Length={len(data)}")
+                if data.empty:
+                    st.session_state.trade_log.append(f"No data fetched for {ticker} ({period}, {interval})")
+                    continue
                 data.reset_index(inplace=True)
                 data.columns = ['Date', 'Close', 'High', 'Low', 'Open', 'Volume']
                 data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
                 data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
                 data.set_index('Date', inplace=True)
+                if len(data) >= 10000:
+                    st.session_state.trade_log.append(f"Data exceeds 10000 candles for {ticker} ({period}, {interval}), truncated")
+                    data = data.iloc[-10000:]
                 all_data[ticker][(period, interval)] = data
     return all_data
 
@@ -74,9 +81,15 @@ def identify_zones(data):
         if body_size_follow < 0.75 * total_height_follow:
             continue
         if data['close'].iloc[i+1] > data['open'].iloc[i+1]:
-            zones.append({'date': data.index[i].to_pydatetime(), 'type': 'demand', 'level': data['low'].iloc[i]})
+            date = data.index[i].to_pydatetime()
+            ist = pytz.timezone('Asia/Kolkata')
+            zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
+            zones.append({'date': zone_date, 'type': 'demand', 'level': data['low'].iloc[i]})
         elif data['close'].iloc[i+1] < data['open'].iloc[i+1]:
-            zones.append({'date': data.index[i].to_pydatetime(), 'type': 'supply', 'level': data['high'].iloc[i]})
+            date = data.index[i].to_pydatetime()
+            ist = pytz.timezone('Asia/Kolkata')
+            zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
+            zones.append({'date': zone_date, 'type': 'supply', 'level': data['high'].iloc[i]})
     return zones
 
 # Approach detection and labeling
@@ -408,7 +421,7 @@ def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones
     ax[0].set_ylabel('Price')
 
     for zone in zones:
-        limit_price = zone['level']
+        limit_price = zone['date']
         side = 'BUY' if zone['type'] == 'demand' else 'SELL'
         color = 'blue' if side == 'BUY' else 'red'
         linewidth = 1
