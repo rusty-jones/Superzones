@@ -29,21 +29,21 @@ periods = ["1d", "5d", "1mo", "3mo", "6mo", "1y"]
 
 # Initialize session state
 if 'dfs' not in st.session_state:
-    st.session_state.dfs = [None] * 4
+    st.session_state.dfs = {}
 if 'zones_list' not in st.session_state:
-    st.session_state.zones_list = [None] * 4
+    st.session_state.zones_list = {}
 if 'trades_list' not in st.session_state:
-    st.session_state.trades_list = [[] for _ in range(4)]
+    st.session_state.trades_list = {}
 if 'metrics_list' not in st.session_state:
-    st.session_state.metrics_list = [{} for _ in range(4)]
+    st.session_state.metrics_list = {}
 if 'equity_list' not in st.session_state:
-    st.session_state.equity_list = [[100000] for _ in range(4)]
+    st.session_state.equity_list = {}
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
 if 'aligned_zones' not in st.session_state:
-    st.session_state.aligned_zones = []
+    st.session_state.aligned_zones = {}
 if 'recommendation' not in st.session_state:
-    st.session_state.recommendation = None
+    st.session_state.recommendation = {}
 
 # Function to fetch and clean data
 def fetch_and_process_data(tickers, periods_intervals):
@@ -52,43 +52,46 @@ def fetch_and_process_data(tickers, periods_intervals):
         all_data[ticker] = {}
         for period, intervals in periods_intervals.items():
             for interval in intervals:
-                data = yf.download(ticker, period=period, interval=interval)
-                st.session_state.trade_log.append(f"Fetched data for {ticker} ({period}, {interval}): Index type={type(data.index)}, Length={len(data)}")
-                if data.empty:
-                    st.session_state.trade_log.append(f"No data fetched for {ticker} ({period}, {interval})")
-                    continue
-                data.reset_index(inplace=True)
-                data.columns = ['Date', 'Close', 'High', 'Low', 'Open', 'Volume']
-                data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-                data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
-                data.set_index('Date', inplace=True)
-                if len(data) >= 10000:
-                    st.session_state.trade_log.append(f"Data exceeds 10000 candles for {ticker} ({period}, {interval}), truncated")
-                    data = data.iloc[-10000:]
-                all_data[ticker][(period, interval)] = data
+                try:
+                    data = yf.download(ticker, period=period, interval=interval)
+                    st.session_state.trade_log.append(f"Fetched data for {ticker} ({period}, {interval}): Index type={type(data.index)}, Length={len(data)}")
+                    if data.empty:
+                        st.session_state.trade_log.append(f"No data fetched for {ticker} ({period}, {interval})")
+                        continue
+                    data.reset_index(inplace=True)
+                    data.columns = ['Date', 'Close', 'High', 'Low', 'Open', 'Volume']
+                    data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+                    data = data.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+                    data.set_index('Date', inplace=True)
+                    if len(data) >= 10000:
+                        st.session_state.trade_log.append(f"Data exceeds 10000 candles for {ticker} ({period}, {interval}), truncated")
+                        data = data.iloc[-10000:]
+                    all_data[ticker][(period, interval)] = data
+                except Exception as e:
+                    st.session_state.trade_log.append(f"Error fetching {ticker} ({period}, {interval}): {str(e)}")
     return all_data
 
-# Zone identification (from deltazone crypto script style)
+# Zone identification
 def identify_zones(data):
     zones = []
+    if len(data) < 2:
+        st.session_state.trade_log.append("Insufficient data for zone identification")
+        return zones
     for i in range(1, len(data) - 1):
         body_size_base = abs(data['open'].iloc[i] - data['close'].iloc[i])
         total_height_base = data['high'].iloc[i] - data['low'].iloc[i]
-        if body_size_base > 0.5 * total_height_base:
+        if body_size_base > 0.5 * total_height_base or total_height_base == 0:
             continue
         body_size_follow = abs(data['open'].iloc[i+1] - data['close'].iloc[i+1])
         total_height_follow = data['high'].iloc[i+1] - data['low'].iloc[i+1]
-        if body_size_follow < 0.75 * total_height_follow:
+        if body_size_follow < 0.75 * total_height_follow or total_height_follow == 0:
             continue
+        date = data.index[i].to_pydatetime()
+        ist = pytz.timezone('Asia/Kolkata')
+        zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
         if data['close'].iloc[i+1] > data['open'].iloc[i+1]:
-            date = data.index[i].to_pydatetime()
-            ist = pytz.timezone('Asia/Kolkata')
-            zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
             zones.append({'date': zone_date, 'type': 'demand', 'level': data['low'].iloc[i]})
         elif data['close'].iloc[i+1] < data['open'].iloc[i+1]:
-            date = data.index[i].to_pydatetime()
-            ist = pytz.timezone('Asia/Kolkata')
-            zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
             zones.append({'date': zone_date, 'type': 'supply', 'level': data['high'].iloc[i]})
     return zones
 
@@ -145,74 +148,76 @@ def calculate_zone_significance(data, zone, timeframe_idx):
 
 # Find aligned zones
 def find_aligned_zones(dfs, zones_list, timeframes_list):
-    aligned_zones = []
-    if not any(zones for zones in zones_list):
-        return aligned_zones
+    aligned_zones = {}
+    for ticker in dfs:
+        aligned_zones[ticker] = []
+        if not any(zones for zones in zones_list.get(ticker, [])):
+            continue
+        
+        all_zones = []
+        for idx, (df, zones, tf) in enumerate(zip(dfs[ticker], zones_list.get(ticker, [None]*4), timeframes_list)):
+            if zones and df is not None:
+                for zone in zones:
+                    score, approaches, age = calculate_zone_significance(df, zone, idx)
+                    all_zones.append({
+                        'level': zone['level'],
+                        'type': zone['type'],
+                        'timeframe': tf,
+                        'score': score,
+                        'approaches': approaches,
+                        'age': age,
+                        'date': zone['date']
+                    })
+        
+        all_zones.sort(key=lambda x: x['level'])
+        current_group = []
+        for zone in all_zones:
+            if not current_group or abs(zone['level'] - current_group[0]['level']) / current_group[0]['level'] <= 0.01:
+                current_group.append(zone)
+            else:
+                if len(current_group) >= 2:
+                    avg_level = np.mean([z['level'] for z in current_group])
+                    zone_type = current_group[0]['type']
+                    timeframes = [z['timeframe'] for z in current_group]
+                    total_score = sum(z['score'] for z in current_group)
+                    approaches = sum(z['approaches'] for z in current_group)
+                    age = np.mean([z['age'] for z in current_group])
+                    aligned_zones[ticker].append({
+                        'level': avg_level,
+                        'type': zone_type,
+                        'timeframes': timeframes,
+                        'score': total_score,
+                        'approaches': approaches,
+                        'age': age,
+                        'count': len(current_group)
+                    })
+                current_group = [zone]
+        
+        if len(current_group) >= 2:
+            avg_level = np.mean([z['level'] for z in current_group])
+            zone_type = current_group[0]['type']
+            timeframes = [z['timeframe'] for z in current_group]
+            total_score = sum(z['score'] for z in current_group)
+            approaches = sum(z['approaches'] for z in current_group)
+            age = np.mean([z['age'] for z in current_group])
+            aligned_zones[ticker].append({
+                'level': avg_level,
+                'type': zone_type,
+                'timeframes': timeframes,
+                'score': total_score,
+                'approaches': approaches,
+                'age': age,
+                'count': len(current_group)
+            })
     
-    all_zones = []
-    for idx, (df, zones, tf) in enumerate(zip(dfs, zones_list, timeframes_list)):
-        if zones and df is not None:
-            for zone in zones:
-                score, approaches, age = calculate_zone_significance(df, zone, idx)
-                all_zones.append({
-                    'level': zone['level'],
-                    'type': zone['type'],
-                    'timeframe': tf,
-                    'score': score,
-                    'approaches': approaches,
-                    'age': age,
-                    'date': zone['date']
-                })
-    
-    all_zones.sort(key=lambda x: x['level'])
-    current_group = []
-    for zone in all_zones:
-        if not current_group or abs(zone['level'] - current_group[0]['level']) / current_group[0]['level'] <= 0.01:
-            current_group.append(zone)
-        else:
-            if len(current_group) >= 2:
-                avg_level = np.mean([z['level'] for z in current_group])
-                zone_type = current_group[0]['type']
-                timeframes = [z['timeframe'] for z in current_group]
-                total_score = sum(z['score'] for z in current_group)
-                approaches = sum(z['approaches'] for z in current_group)
-                age = np.mean([z['age'] for z in current_group])
-                aligned_zones.append({
-                    'level': avg_level,
-                    'type': zone_type,
-                    'timeframes': timeframes,
-                    'score': total_score,
-                    'approaches': approaches,
-                    'age': age,
-                    'count': len(current_group)
-                })
-            current_group = [zone]
-    
-    if len(current_group) >= 2:
-        avg_level = np.mean([z['level'] for z in current_group])
-        zone_type = current_group[0]['type']
-        timeframes = [z['timeframe'] for z in current_group]
-        total_score = sum(z['score'] for z in current_group)
-        approaches = sum(z['approaches'] for z in current_group)
-        age = np.mean([z['age'] for z in current_group])
-        aligned_zones.append({
-            'level': avg_level,
-            'type': zone_type,
-            'timeframes': timeframes,
-            'score': total_score,
-            'approaches': approaches,
-            'age': age,
-            'count': len(current_group)
-        })
-    
-    return sorted(aligned_zones, key=lambda x: x['score'], reverse=True)
+    return aligned_zones
 
 # Generate trade recommendation
 def generate_trade_recommendation(dfs, aligned_zones, symbol):
-    if not aligned_zones or not any(df is not None for df in dfs):
+    if not aligned_zones or symbol not in aligned_zones or not any(df is not None for df in dfs.get(symbol, [])):
         return {"signal": "Hold", "confidence": 0, "details": "No aligned zones found"}
     
-    latest_df = dfs[3]  # Lowest timeframe
+    latest_df = dfs[symbol][3]  # Lowest timeframe
     if latest_df is None:
         return {"signal": "Hold", "confidence": 0, "details": "No data for lowest timeframe"}
     
@@ -221,7 +226,7 @@ def generate_trade_recommendation(dfs, aligned_zones, symbol):
     is_bullish = latest_candle['close'] > latest_candle['open']
     is_bearish = latest_candle['close'] < latest_candle['open']
     
-    for zone in aligned_zones[:3]:
+    for zone in aligned_zones[symbol][:3]:
         zone_level = zone['level']
         zone_type = zone['type']
         proximity = abs(current_price - zone_level) / current_price
@@ -400,7 +405,7 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
         linewidth = 1
         alpha = 0.5
 
-        for az in aligned_zones:
+        for az in aligned_zones.get(symbol, []):
             if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
                 linewidth = 2
                 alpha = 0.8
@@ -421,13 +426,13 @@ def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones
     ax[0].set_ylabel('Price')
 
     for zone in zones:
-        limit_price = zone['date']
+        limit_price = zone['level']
         side = 'BUY' if zone['type'] == 'demand' else 'SELL'
         color = 'blue' if side == 'BUY' else 'red'
         linewidth = 1
         alpha = 0.5
 
-        for az in aligned_zones:
+        for az in aligned_zones.get(symbol, []):
             if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
                 linewidth = 2
                 alpha = 0.8
@@ -472,23 +477,23 @@ st.title("Indian Stocks Trading App")
 # Guidelines
 st.markdown("""
 **Guidelines**: 
-- Enter a valid ticker (e.g., `nifty50`, `RELIANCE`).
-- Use consistent timeframes and periods (e.g., `1m` with `1d`, `1h` with `6mo`).
+- Enter valid tickers (e.g., `nifty50, banknifty`) separated by commas.
+- Use consistent timeframes and periods (e.g., `1d` with `1mo`, `1wk` with `6mo`).
 - Uncheck `NSE stocks` for indices like `nifty50` (`^NSEI`); check for stocks (e.g., `RELIANCE` → `RELIANCE.NS`).
 """)
 
 # Sidebar for controls
 with st.sidebar:
     st.header("Controls")
-    tickers = st.text_input("Enter stock symbol (e.g., nifty50, RELIANCE)", "nifty50")
+    tickers = st.text_input("Enter stock symbols (e.g., nifty50, banknifty)", "nifty50")
     append_ns = st.checkbox("NSE stocks", value=True)
     
     st.subheader("Timeframe 1")
-    timeframe_1 = st.selectbox("Timeframe 1", list(timeframes.keys()), index=5, key="tf1")
+    timeframe_1 = st.selectbox("Timeframe 1", list(timeframes.keys()), index=6, key="tf1")  # Default to 1d
     period_1 = st.selectbox("Period 1", periods, index=4, key="p1")
     
     st.subheader("Timeframe 2")
-    timeframe_2 = st.selectbox("Timeframe 2", list(timeframes.keys()), index=4, key="tf2")
+    timeframe_2 = st.selectbox("Timeframe 2", list(timeframes.keys()), index=7, key="tf2")  # Default to 1wk
     period_2 = st.selectbox("Period 2", periods, index=2, key="p2")
     
     st.subheader("Timeframe 3")
@@ -542,130 +547,141 @@ tab1, tab2, tab3, tab4 = st.tabs(["Chart", "Backtest", "Trade Chart", "Decision"
 # Chart Tab
 with tab1:
     if plot_button:
-        st.session_state.dfs = [None] * 4
-        st.session_state.zones_list = [None] * 4
-        st.session_state.aligned_zones = []
-        st.session_state.recommendation = None
+        st.session_state.dfs = {ticker: [None] * 4 for ticker in final_ticker_list}
+        st.session_state.zones_list = {ticker: [None] * 4 for ticker in final_ticker_list}
+        st.session_state.aligned_zones = {}
+        st.session_state.recommendation = {}
         
         all_data = fetch_and_process_data(final_ticker_list, periods_intervals)
-        ticker = final_ticker_list[0] if final_ticker_list else "nifty50"
-        st.session_state.trade_log.append(f"Selected ticker: {ticker}")
-        
-        data_fetched = False
-        for idx, (tf, period) in enumerate(zip(timeframes_list, periods_list)):
-            if ticker in all_data and (period, tf) in all_data[ticker]:
-                df = all_data[ticker][(period, tf)]
-                if len(df) >= 10000:
-                    st.session_state.trade_log.append(f"Data exceeds 10000 candles for Timeframe {idx+1}: {tf}, Period: {period}, truncated")
-                    df = df.iloc[-10000:]
-                st.session_state.dfs[idx] = df
-                st.session_state.zones_list[idx] = identify_zones(df)
-                data_fetched = True
-                st.session_state.trade_log.append(f"Found {len(st.session_state.zones_list[idx])} zones for {ticker} (Timeframe: {tf}, Period: {period})")
+        for ticker in final_ticker_list:
+            st.session_state.trade_log.append(f"Processing ticker: {ticker}")
+            data_fetched = False
+            if ticker in all_data:
+                for idx, (tf, period) in enumerate(zip(timeframes_list, periods_list)):
+                    if (period, tf) in all_data[ticker]:
+                        df = all_data[ticker][(period, tf)]
+                        st.session_state.dfs[ticker][idx] = df
+                        st.session_state.zones_list[ticker][idx] = identify_zones(df)
+                        data_fetched = True
+                        st.session_state.trade_log.append(f"Found {len(st.session_state.zones_list[ticker][idx])} zones for {ticker} (Timeframe: {tf}, Period: {period})")
+                    else:
+                        st.session_state.trade_log.append(f"No data found for {ticker} (Timeframe: {tf}, Period: {period})")
+            
+            if not data_fetched:
+                st.error(f"No valid data fetched for {ticker}. Please check ticker or timeframe settings.")
             else:
-                st.error(f"No data found for {ticker} (Timeframe: {tf}, Period: {period})")
+                st.session_state.aligned_zones[ticker] = find_aligned_zones({ticker: st.session_state.dfs[ticker]}, 
+                                                                           {ticker: st.session_state.zones_list[ticker]}, 
+                                                                           timeframes_list)
+                st.session_state.recommendation[ticker] = generate_trade_recommendation({ticker: st.session_state.dfs[ticker]}, 
+                                                                                       st.session_state.aligned_zones, ticker)
+                st.session_state.trade_log.append(f"Found {len(st.session_state.aligned_zones[ticker])} aligned zones for {ticker}. Recommendation: {st.session_state.recommendation[ticker]['signal']}")
         
-        if not data_fetched:
-            st.error("No valid data fetched for any timeframe. Please check ticker or timeframe settings.")
-        else:
-            st.session_state.aligned_zones = find_aligned_zones(st.session_state.dfs, st.session_state.zones_list, timeframes_list)
-            st.session_state.recommendation = generate_trade_recommendation(st.session_state.dfs, st.session_state.aligned_zones, ticker)
-            st.session_state.trade_log.append(f"Found {len(st.session_state.aligned_zones)} aligned zones. Recommendation: {st.session_state.recommendation['signal']}")
-        
-        col1, col2 = st.columns(2)
-        for idx, (df, zones, tf, period) in enumerate(zip(st.session_state.dfs, st.session_state.zones_list, timeframes_list, periods_list)):
-            if df is not None and zones is not None:
-                with col1 if idx in [0, 2] else col2:
-                    fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
-                    if fig:
-                        st.pyplot(fig)
-                        st.session_state.trade_log.append(f"Chart plotted successfully for Timeframe {idx+1}: {tf}!")
-                        plt.close(fig)
+        cols = st.columns(min(4, len(final_ticker_list) * 2))  # Up to 4 columns
+        idx = 0
+        for ticker in final_ticker_list:
+            for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
+                if df is not None and zones is not None:
+                    with cols[idx % 4]:
+                        fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
+                        if fig:
+                            st.pyplot(fig)
+                            st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
+                            plt.close(fig)
+                    idx += 1
 
 # Backtest Tab
 with tab2:
-    if backtest_button and any(df is not None for df in st.session_state.dfs):
+    if backtest_button and any(any(df is not None for df in dfs.values()) for dfs in st.session_state.dfs.values()):
         timeframes_list = [timeframe_1, timeframe_2, timeframe_3, timeframe_4]
         periods_list = [period_1, period_2, period_3, period_4]
-        st.session_state.trades_list = [[] for _ in range(4)]
-        st.session_state.metrics_list = [{} for _ in range(4)]
-        st.session_state.equity_list = [[100000] for _ in range(4)]
+        st.session_state.trades_list = {ticker: [[] for _ in range(4)] for ticker in final_ticker_list}
+        st.session_state.metrics_list = {ticker: [{} for _ in range(4)] for ticker in final_ticker_list}
+        st.session_state.equity_list = {ticker: [[100000] for _ in range(4)] for ticker in final_ticker_list}
         
-        for idx, (df, zones, tf, period) in enumerate(zip(st.session_state.dfs, st.session_state.zones_list, timeframes_list, periods_list)):
-            if df is None or zones is None:
-                continue
-            filtered_zones = [z for z in zones if (z['type'] == 'demand' and show_buy_zones) or (z['type'] == 'supply' and show_sell_zones)]
-            trades, metrics, equity = backtest_strategy(df, filtered_zones)
-            st.session_state.trades_list[idx] = trades
-            st.session_state.metrics_list[idx] = metrics
-            st.session_state.equity_list[idx] = equity
-            st.session_state.trade_log.append(f"Backtest completed for Timeframe {idx+1}: {tf}: {metrics['num_trades']} trades")
+        for ticker in final_ticker_list:
+            for idx, (df, zones, tf, period) in enumerate(zip(st.session_state.dfs[ticker], st.session_state.zones_list[ticker], timeframes_list, periods_list)):
+                if df is None or zones is None:
+                    continue
+                filtered_zones = [z for z in zones if (z['type'] == 'demand' and show_buy_zones) or (z['type'] == 'supply' and show_sell_zones)]
+                trades, metrics, equity = backtest_strategy(df, filtered_zones)
+                st.session_state.trades_list[ticker][idx] = trades
+                st.session_state.metrics_list[ticker][idx] = metrics
+                st.session_state.equity_list[ticker][idx] = equity
+                st.session_state.trade_log.append(f"Backtest completed for {ticker} (Timeframe {idx+1}: {tf}): {metrics['num_trades']} trades")
         
-        col1, col2 = st.columns(2)
-        for idx, (metrics, equity, trades, tf, period) in enumerate(zip(st.session_state.metrics_list, st.session_state.equity_list, st.session_state.trades_list, timeframes_list, periods_list)):
-            if metrics:
-                with col1 if idx in [0, 2] else col2:
-                    st.subheader(f"Timeframe {idx+1}: {tf}, Period: {period}")
-                    col3, col4 = st.columns([1, 1])
-                    with col3:
-                        st.metric("Total Return", f"{metrics.get('total_return', 0):.2f}%")
-                        st.metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
-                        st.metric("Max Drawdown", f"{metrics.get('max_drawdown', 0):.2f}%")
-                        st.metric("Number of Trades", metrics.get('num_trades', 0))
-                    with col4:
-                        fig, ax = plt.subplots(figsize=(5, 3))
-                        ax.plot(equity, color='blue', label='Equity')
-                        ax.set_title(f"Equity Curve (TF {idx+1})")
-                        ax.set_xlabel("Trade")
-                        ax.set_ylabel("Equity ($)")
-                        ax.grid(True)
-                        ax.legend()
-                        st.pyplot(fig)
-                        plt.close(fig)
-                    
-                    trade_df = pd.DataFrame(trades)
-                    if not trade_df.empty:
-                        trade_df['entry_time'] = trade_df['entry_time'].astype(str)
-                        trade_df['exit_time'] = trade_df['exit_time'].astype(str)
-                        st.dataframe(trade_df[['entry_time', 'exit_time', 'type', 'entry_price', 'exit_price', 'pl', 'exit_type']])
+        cols = st.columns(min(4, len(final_ticker_list) * 2))
+        idx = 0
+        for ticker in final_ticker_list:
+            for idx_tf, (metrics, equity, trades, tf, period) in enumerate(zip(st.session_state.metrics_list[ticker], st.session_state.equity_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
+                if metrics:
+                    with cols[idx % 4]:
+                        st.subheader(f"{ticker} - Timeframe {idx_tf+1}: {tf}, Period: {period}")
+                        col3, col4 = st.columns([1, 1])
+                        with col3:
+                            st.metric("Total Return", f"{metrics.get('total_return', 0):.2f}%")
+                            st.metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
+                            st.metric("Max Drawdown", f"{metrics.get('max_drawdown', 0):.2f}%")
+                            st.metric("Number of Trades", metrics.get('num_trades', 0))
+                        with col4:
+                            fig, ax = plt.subplots(figsize=(5, 3))
+                            ax.plot(equity, color='blue', label='Equity')
+                            ax.set_title(f"{ticker} Equity Curve (TF {idx_tf+1})")
+                            ax.set_xlabel("Trade")
+                            ax.set_ylabel("Equity ($)")
+                            ax.grid(True)
+                            ax.legend()
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        
+                        trade_df = pd.DataFrame(trades)
+                        if not trade_df.empty:
+                            trade_df['entry_time'] = trade_df['entry_time'].astype(str)
+                            trade_df['exit_time'] = trade_df['exit_time'].astype(str)
+                            st.dataframe(trade_df[['entry_time', 'exit_time', 'type', 'entry_price', 'exit_price', 'pl', 'exit_type']])
+                    idx += 1
 
 # Trade Chart Tab
 with tab3:
-    if any(trades for trades in st.session_state.trades_list) and any(df is not None for df in st.session_state.dfs):
+    if any(any(trades for trades in tls.values()) for tls in st.session_state.trades_list.values()) and any(any(df is not None for df in dfs.values()) for dfs in st.session_state.dfs.values()):
         timeframes_list = [timeframe_1, timeframe_2, timeframe_3, timeframe_4]
         periods_list = [period_1, period_2, period_3, period_4]
-        col1, col2 = st.columns(2)
-        for idx, (df, zones, trades, tf, period) in enumerate(zip(st.session_state.dfs, st.session_state.zones_list, st.session_state.trades_list, timeframes_list, periods_list)):
-            if df is not None and zones is not None and trades:
-                with col1 if idx in [0, 2] else col2:
-                    fig = plot_trade_chart(df, zones, trades, ticker, tf, period, st.session_state.aligned_zones)
-                    if fig:
-                        st.pyplot(fig)
-                        st.session_state.trade_log.append(f"Trade Chart updated with trade markers for Timeframe {idx+1}: {tf}")
-                        plt.close(fig)
+        cols = st.columns(min(4, len(final_ticker_list) * 2))
+        idx = 0
+        for ticker in final_ticker_list:
+            for idx_tf, (df, zones, trades, tf, period) in enumerate(zip(st.session_state.dfs[ticker], st.session_state.zones_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
+                if df is not None and zones is not None and trades:
+                    with cols[idx % 4]:
+                        fig = plot_trade_chart(df, zones, trades, ticker, tf, period, st.session_state.aligned_zones)
+                        if fig:
+                            st.pyplot(fig)
+                            st.session_state.trade_log.append(f"Trade Chart updated for {ticker} (Timeframe {idx_tf+1}: {tf})")
+                            plt.close(fig)
+                    idx += 1
     else:
         st.write("Run a backtest to view the trade charts.")
 
 # Decision Tab
 with tab4:
-    if st.session_state.recommendation and st.session_state.aligned_zones:
-        st.subheader("Trade Recommendation")
-        rec = st.session_state.recommendation
-        st.write(f"**Signal**: {rec['signal']}")
-        st.write(f"**Confidence**: {rec['confidence']:.1f}%")
-        st.write(f"**Details**: {rec['details']}")
-        
-        st.subheader("Aligned Zones")
-        zones_df = pd.DataFrame(st.session_state.aligned_zones)
-        if not zones_df.empty:
-            zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x))
-            zones_df['level'] = zones_df['level'].round(2)
-            zones_df['age'] = zones_df['age'].round(1)
-            zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
-            zones_df.columns = ['Price Level', 'Type', 'Timeframes', 'TF Count', 'Approaches', 'Age (days)', 'Score']
-            st.dataframe(zones_df)
-    else:
-        st.write("Plot charts to generate trade recommendations.")
+    for ticker in final_ticker_list:
+        if ticker in st.session_state.recommendation and ticker in st.session_state.aligned_zones:
+            st.subheader(f"Trade Recommendation for {ticker}")
+            rec = st.session_state.recommendation[ticker]
+            st.write(f"**Signal**: {rec['signal']}")
+            st.write(f"**Confidence**: {rec['confidence']:.1f}%")
+            st.write(f"**Details**: {rec['details']}")
+            
+            st.subheader(f"Aligned Zones for {ticker}")
+            zones_df = pd.DataFrame(st.session_state.aligned_zones[ticker])
+            if not zones_df.empty:
+                zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x))
+                zones_df['level'] = zones_df['level'].round(2)
+                zones_df['age'] = zones_df['age'].round(1)
+                zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
+                zones_df.columns = ['Price Level', 'Type', 'Timeframes', 'TF Count', 'Approaches', 'Age (days)', 'Score']
+                st.dataframe(zones_df)
+        else:
+            st.write(f"Plot charts to generate trade recommendations for {ticker}.")
 
 # Trade Log
 st.header("Trade Log")
