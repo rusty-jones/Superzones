@@ -54,7 +54,7 @@ def fetch_and_process_data(tickers, periods_intervals):
             for interval in intervals:
                 try:
                     data = yf.download(ticker, period=period, interval=interval)
-                    st.session_state.trade_log.append(f"Fetched data for {ticker} ({period}, {interval}): Index type={type(data.index)}, Length={len(data)}")
+                    st.session_state.trade_log.append(f"Fetched data for {ticker} ({period}, {interval}): Index type={type(data.index)}, Length={len(data)}, Tz={data.index.tz}")
                     if data.empty:
                         st.session_state.trade_log.append(f"No data fetched for {ticker} ({period}, {interval})")
                         continue
@@ -88,7 +88,12 @@ def identify_zones(data):
             continue
         date = data.index[i].to_pydatetime()
         ist = pytz.timezone('Asia/Kolkata')
-        zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
+        # Normalize to index timezone if available, otherwise use IST
+        index_tz = data.index.tz
+        if index_tz:
+            zone_date = date.replace(tzinfo=index_tz) if date.tzinfo is None else date.astimezone(index_tz)
+        else:
+            zone_date = ist.localize(date) if date.tzinfo is None else date.astimezone(ist)
         if data['close'].iloc[i+1] > data['open'].iloc[i+1]:
             zones.append({'date': zone_date, 'type': 'demand', 'level': data['low'].iloc[i]})
         elif data['close'].iloc[i+1] < data['open'].iloc[i+1]:
@@ -102,6 +107,10 @@ def find_approaches_and_labels(data, zones):
         zone_date = zone['date']
         zone_level = zone['level']
         zone_type = zone['type']
+        # Convert zone_date to match data.index timezone
+        index_tz = data.index.tz
+        if index_tz:
+            zone_date = zone_date.astimezone(index_tz)
         future_data = data[data.index > zone_date]
         if zone_type == 'demand':
             approaches = future_data[(future_data['low'] >= zone_level * 0.99) & (future_data['low'] <= zone_level * 1.01)]
@@ -141,7 +150,7 @@ def find_approaches_and_labels(data, zones):
 def calculate_zone_significance(data, zone, timeframe_idx):
     approaches = len(find_approaches_and_labels(data, [zone]))
     ist = pytz.timezone('Asia/Kolkata')
-    age = (datetime.now(ist) - zone['date']).total_seconds() / (3600 * 24)  # Age in days
+    age = (datetime.now(ist) - zone['date'].astimezone(ist)).total_seconds() / (3600 * 24)  # Age in days
     timeframe_weight = {0: 1.5, 1: 1.2, 2: 1.0, 3: 0.8}.get(timeframe_idx, 1.0)
     score = (approaches * 10 + age * 0.1) * timeframe_weight
     return score, approaches, age
