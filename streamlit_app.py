@@ -434,7 +434,7 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
             continue
         if side == 'SELL' and not show_sell_zones:
             continue
-        color = 'navy' if side == 'BUY' else 'darkred'  # Darker colors
+        color = 'blue' if side == 'BUY' else 'red'
         linewidth = 1
         alpha = 0.5
 
@@ -463,7 +463,7 @@ def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones
     for zone in zones:
         limit_price = zone['level']
         side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        color = 'navy' if side == 'BUY' else 'darkred'  # Darker colors
+        color = 'blue' if side == 'BUY' else 'red'
         linewidth = 1
         alpha = 0.5
 
@@ -624,7 +624,7 @@ with tab1:
             try:
                 num_plots = len(final_ticker_list) * len(timeframes_list)  # Total number of plots
                 for i in range(0, num_plots, 2):
-                    cols = st.columns([1, 1])  # Equal width columns
+                    cols = st.columns(2)
                     for j in range(2):
                         idx = i + j
                         if idx < num_plots:
