@@ -525,19 +525,19 @@ with st.sidebar:
     append_ns = st.checkbox("NSE stocks", value=True)
     
     st.subheader("Timeframe 1")
-    timeframe_1 = st.selectbox("Timeframe 1", list(timeframes.keys()), index=6, key="tf1")  # Default to 1d
+    timeframe_1 = st.selectbox("Timeframe 1", list(timeframes.keys()), index=7, key="tf1")  # Default to 1d
     period_1 = st.selectbox("Period 1", periods, index=4, key="p1")
     
     st.subheader("Timeframe 2")
-    timeframe_2 = st.selectbox("Timeframe 2", list(timeframes.keys()), index=7, key="tf2")  # Default to 1wk
+    timeframe_2 = st.selectbox("Timeframe 2", list(timeframes.keys()), index=6, key="tf2")  # Default to 1wk
     period_2 = st.selectbox("Period 2", periods, index=3, key="p2")
     
     st.subheader("Timeframe 3")
-    timeframe_3 = st.selectbox("Timeframe 3", list(timeframes.keys()), index=3, key="tf3")
+    timeframe_3 = st.selectbox("Timeframe 3", list(timeframes.keys()), index=4, key="tf3")
     period_3 = st.selectbox("Period 3", periods, index=1, key="p3")
     
     st.subheader("Timeframe 4")
-    timeframe_4 = st.selectbox("Timeframe 4", list(timeframes.keys()), index=2, key="tf4")
+    timeframe_4 = st.selectbox("Timeframe 4", list(timeframes.keys()), index=1, key="tf4")
     period_4 = st.selectbox("Period 4", periods, index=0, key="p4")
     
     show_buy_zones = st.checkbox("Show Demand Zones", value=True)
