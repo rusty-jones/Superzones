@@ -434,10 +434,11 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
         alpha = 0.5
 
         for az in aligned_zones.get(symbol, []):
-            if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
-                linewidth = 2
-                alpha = 0.8
-                break
+            if az and isinstance(az, dict) and 'level' in az and 'type' in az:
+                if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
+                    linewidth = 2
+                    alpha = 0.8
+                    break
 
         if show_limit_lines:
             ax[0].axhline(y=limit_price, color=color, linestyle='--', alpha=alpha, linewidth=linewidth)
@@ -461,10 +462,11 @@ def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones
         alpha = 0.5
 
         for az in aligned_zones.get(symbol, []):
-            if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
-                linewidth = 2
-                alpha = 0.8
-                break
+            if az and isinstance(az, dict) and 'level' in az and 'type' in az:
+                if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
+                    linewidth = 2
+                    alpha = 0.8
+                    break
 
         ax[0].axhline(y=limit_price, color=color, linestyle='--', alpha=alpha, linewidth=linewidth)
 
