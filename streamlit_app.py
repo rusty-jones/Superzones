@@ -44,6 +44,10 @@ if 'aligned_zones' not in st.session_state:
     st.session_state.aligned_zones = {}
 if 'recommendation' not in st.session_state:
     st.session_state.recommendation = {}
+if 'plot_data_ready' not in st.session_state:
+    st.session_state.plot_data_ready = False
+if 'backtest_data_ready' not in st.session_state:
+    st.session_state.backtest_data_ready = False
 
 # Function to fetch and clean data
 def fetch_and_process_data(tickers, periods_intervals):
@@ -578,8 +582,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["Chart", "Backtest", "Trade Chart", "Decision"
 
 # Chart Tab
 with tab1:
-    if 'plot_data_ready' not in st.session_state:
-        st.session_state.plot_data_ready = False
     if plot_button and not st.session_state.plot_data_ready:
         st.session_state.dfs = {ticker: [None] * 4 for ticker in final_ticker_list}
         st.session_state.zones_list = {ticker: [None] * 4 for ticker in final_ticker_list}
@@ -615,23 +617,24 @@ with tab1:
                 else:
                     st.session_state.trade_log.append(f"No aligned zones found for {ticker}, skipping recommendation")
         
-        cols = st.columns(min(4, len(final_ticker_list) * 2))  # Up to 4 columns
-        idx = 0
-        for ticker in final_ticker_list:
-            for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
-                if df is not None and zones is not None:
-                    with cols[idx % 4]:
-                        fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
-                        if fig:
-                            st.pyplot(fig)
-                            st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
-                            plt.close(fig)
-                    idx += 1
+        if final_ticker_list:  # Ensure final_ticker_list is valid
+            cols = st.columns(min(4, len(final_ticker_list) * 2))  # Up to 4 columns
+            idx = 0
+            for ticker in final_ticker_list:
+                for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
+                    if df is not None and zones is not None:
+                        with cols[idx % 4]:
+                            fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
+                            if fig:
+                                st.pyplot(fig)
+                                st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
+                                plt.close(fig)
+                        idx += 1
+        else:
+            st.error("No valid tickers to plot. Please check ticker input.")
 
 # Backtest Tab
 with tab2:
-    if 'backtest_data_ready' not in st.session_state:
-        st.session_state.backtest_data_ready = False
     if backtest_button and not st.session_state.backtest_data_ready:
         st.session_state.trades_list = {ticker: [[] for _ in range(4)] for ticker in final_ticker_list}
         st.session_state.metrics_list = {ticker: [{} for _ in range(4)] for ticker in final_ticker_list}
@@ -651,78 +654,85 @@ with tab2:
                 st.session_state.equity_list[ticker][idx] = equity
                 st.session_state.trade_log.append(f"Backtest completed for {ticker} (Timeframe {idx+1}: {tf}): {metrics['num_trades']} trades")
         
-        cols = st.columns(min(4, len(final_ticker_list) * 2))
-        idx = 0
-        for ticker in final_ticker_list:
-            for idx_tf, (metrics, equity, trades, tf, period) in enumerate(zip(st.session_state.metrics_list[ticker], st.session_state.equity_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
-                if metrics:
-                    with cols[idx % 4]:
-                        st.subheader(f"{ticker} - Timeframe {idx_tf+1}: {tf}, Period: {period}")
-                        col3, col4 = st.columns([1, 1])
-                        with col3:
-                            st.metric("Total Return", f"{metrics.get('total_return', 0):.2f}%")
-                            st.metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
-                            st.metric("Max Drawdown", f"{metrics.get('max_drawdown', 0):.2f}%")
-                            st.metric("Number of Trades", metrics.get('num_trades', 0))
-                        with col4:
-                            fig, ax = plt.subplots(figsize=(5, 3))
-                            ax.plot(equity, color='blue', label='Equity')
-                            ax.set_title(f"{ticker} Equity Curve (TF {idx_tf+1})")
-                            ax.set_xlabel("Trade")
-                            ax.set_ylabel("Equity ($)")
-                            ax.grid(True)
-                            ax.legend()
-                            st.pyplot(fig)
-                            plt.close(fig)
-                        
-                        trade_df = pd.DataFrame(trades)
-                        if not trade_df.empty:
-                            trade_df['entry_time'] = trade_df['entry_time'].astype(str)
-                            trade_df['exit_time'] = trade_df['exit_time'].astype(str)
-                            st.dataframe(trade_df[['entry_time', 'exit_time', 'type', 'entry_price', 'exit_price', 'pl', 'exit_type']])
-                    idx += 1
+        if final_ticker_list:  # Ensure final_ticker_list is valid
+            cols = st.columns(min(4, len(final_ticker_list) * 2))
+            idx = 0
+            for ticker in final_ticker_list:
+                for idx_tf, (metrics, equity, trades, tf, period) in enumerate(zip(st.session_state.metrics_list[ticker], st.session_state.equity_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
+                    if metrics:
+                        with cols[idx % 4]:
+                            st.subheader(f"{ticker} - Timeframe {idx_tf+1}: {tf}, Period: {period}")
+                            col3, col4 = st.columns([1, 1])
+                            with col3:
+                                st.metric("Total Return", f"{metrics.get('total_return', 0):.2f}%")
+                                st.metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
+                                st.metric("Max Drawdown", f"{metrics.get('max_drawdown', 0):.2f}%")
+                                st.metric("Number of Trades", metrics.get('num_trades', 0))
+                            with col4:
+                                fig, ax = plt.subplots(figsize=(5, 3))
+                                ax.plot(equity, color='blue', label='Equity')
+                                ax.set_title(f"{ticker} Equity Curve (TF {idx_tf+1})")
+                                ax.set_xlabel("Trade")
+                                ax.set_ylabel("Equity ($)")
+                                ax.grid(True)
+                                ax.legend()
+                                st.pyplot(fig)
+                                plt.close(fig)
+                            
+                                trade_df = pd.DataFrame(trades)
+                                if not trade_df.empty:
+                                    trade_df['entry_time'] = trade_df['entry_time'].astype(str)
+                                    trade_df['exit_time'] = trade_df['exit_time'].astype(str)
+                                    st.dataframe(trade_df[['entry_time', 'exit_time', 'type', 'entry_price', 'exit_price', 'pl', 'exit_type']])
+                        idx += 1
+        else:
+            st.error("No valid tickers to backtest. Please check ticker input.")
 
 # Trade Chart Tab
 with tab3:
     if any(any(trades for trades in tls.values()) for tls in st.session_state.trades_list.values()) and any(any(df is not None for df in dfs.values()) for dfs in st.session_state.dfs.values()):
         timeframes_list = [timeframe_1, timeframe_2, timeframe_3, timeframe_4]
         periods_list = [period_1, period_2, period_3, period_4]
-        cols = st.columns(min(4, len(final_ticker_list) * 2))
-        idx = 0
-        for ticker in final_ticker_list:
-            for idx_tf, (df, zones, trades, tf, period) in enumerate(zip(st.session_state.dfs[ticker], st.session_state.zones_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
-                if df is not None and zones is not None and trades:
-                    with cols[idx % 4]:
-                        fig = plot_trade_chart(df, zones, trades, ticker, tf, period, st.session_state.aligned_zones)
-                        if fig:
-                            st.pyplot(fig)
-                            st.session_state.trade_log.append(f"Trade Chart updated for {ticker} (Timeframe {idx_tf+1}: {tf})")
-                            plt.close(fig)
-                    idx += 1
+        if final_ticker_list:  # Ensure final_ticker_list is valid
+            cols = st.columns(min(4, len(final_ticker_list) * 2))
+            idx = 0
+            for ticker in final_ticker_list:
+                for idx_tf, (df, zones, trades, tf, period) in enumerate(zip(st.session_state.dfs[ticker], st.session_state.zones_list[ticker], st.session_state.trades_list[ticker], timeframes_list, periods_list)):
+                    if df is not None and zones is not None and trades:
+                        with cols[idx % 4]:
+                            fig = plot_trade_chart(df, zones, trades, ticker, tf, period, st.session_state.aligned_zones)
+                            if fig:
+                                st.pyplot(fig)
+                                st.session_state.trade_log.append(f"Trade Chart updated for {ticker} (Timeframe {idx_tf+1}: {tf})")
+                                plt.close(fig)
+                        idx += 1
     else:
         st.write("Run a backtest to view the trade charts.")
 
 # Decision Tab
 with tab4:
-    for ticker in final_ticker_list:
-        if ticker in st.session_state.recommendation and ticker in st.session_state.aligned_zones:
-            st.subheader(f"Trade Recommendation for {ticker}")
-            rec = st.session_state.recommendation[ticker]
-            st.write(f"**Signal**: {rec['signal']}")
-            st.write(f"**Confidence**: {rec['confidence']:.1f}%")
-            st.write(f"**Details**: {rec['details']}")
-            
-            st.subheader(f"Aligned Zones for {ticker}")
-            zones_df = pd.DataFrame(st.session_state.aligned_zones[ticker])
-            if not zones_df.empty:
-                zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
-                zones_df['level'] = zones_df['level'].round(2)
-                zones_df['age'] = zones_df['age'].round(1)
-                zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
-                zones_df.columns = ['Price Level', 'Type', 'Timeframes', 'TF Count', 'Approaches', 'Age (days)', 'Score']
-                st.dataframe(zones_df)
-        else:
-            st.write(f"Plot charts to generate trade recommendations for {ticker}.")
+    if st.session_state.plot_data_ready:
+        for ticker in final_ticker_list:
+            if ticker in st.session_state.recommendation and ticker in st.session_state.aligned_zones:
+                st.subheader(f"Trade Recommendation for {ticker}")
+                rec = st.session_state.recommendation[ticker]
+                st.write(f"**Signal**: {rec['signal']}")
+                st.write(f"**Confidence**: {rec['confidence']:.1f}%")
+                st.write(f"**Details**: {rec['details']}")
+                
+                st.subheader(f"Aligned Zones for {ticker}")
+                zones_df = pd.DataFrame(st.session_state.aligned_zones[ticker])
+                if not zones_df.empty:
+                    zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
+                    zones_df['level'] = zones_df['level'].round(2)
+                    zones_df['age'] = zones_df['age'].round(1)
+                    zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
+                    zones_df.columns = ['Price Level', 'Type', 'Timeframes', 'TF Count', 'Approaches', 'Age (days)', 'Score']
+                    st.dataframe(zones_df)
+            else:
+                st.write(f"Plot charts to generate trade recommendations for {ticker}.")
+    else:
+        st.write("Click 'Plot Chart' to generate trade recommendations.")
 
 # Trade Log
 st.header("Trade Log")
