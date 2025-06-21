@@ -582,11 +582,14 @@ tab1, tab2, tab3, tab4 = st.tabs(["Chart", "Backtest", "Trade Chart", "Decision"
 
 # Chart Tab
 with tab1:
-    if plot_button and not st.session_state.plot_data_ready:
+    if plot_button:
+        # Reset state to allow re-plotting
+        st.session_state.plot_data_ready = False
         st.session_state.dfs = {ticker: [None] * 4 for ticker in final_ticker_list}
         st.session_state.zones_list = {ticker: [None] * 4 for ticker in final_ticker_list}
         st.session_state.aligned_zones = {}
         st.session_state.recommendation = {}
+        
         st.session_state.plot_data_ready = True
         
         all_data = fetch_and_process_data(final_ticker_list, periods_intervals)
