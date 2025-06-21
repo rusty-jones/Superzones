@@ -623,21 +623,25 @@ with tab1:
         if final_ticker_list:  # Ensure final_ticker_list is valid
             try:
                 num_plots = len(final_ticker_list) * len(timeframes_list)  # Total number of plots
-                cols = st.columns(min(4, num_plots))  # Limit to 4 columns
-                idx = 0
-                for ticker in final_ticker_list:
-                    for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
-                        if df is not None and zones is not None:
-                            if idx < len(cols):  # Safety check to prevent index out of range
-                                with cols[idx]:
+                for i in range(0, num_plots, 2):
+                    cols = st.columns(2)
+                    for j in range(2):
+                        idx = i + j
+                        if idx < num_plots:
+                            ticker_idx = idx // len(timeframes_list)
+                            timeframe_idx = idx % len(timeframes_list)
+                            ticker = final_ticker_list[ticker_idx]
+                            tf = timeframes_list[timeframe_idx]
+                            period = periods_list[timeframe_idx]
+                            df = st.session_state.dfs[ticker][timeframe_idx]
+                            zones = st.session_state.zones_list[ticker][timeframe_idx]
+                            if df is not None and zones is not None:
+                                with cols[j]:
                                     fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
                                     if fig:
                                         st.pyplot(fig)
                                         st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
                                         plt.close(fig)
-                                idx += 1
-                            else:
-                                st.session_state.trade_log.append(f"Skipped plot for {ticker} (Timeframe: {tf}) due to insufficient columns")
             except IndexError as e:
                 st.error(f"Error rendering charts: {str(e)}. Check ticker and timeframe settings.")
         else:
