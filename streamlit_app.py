@@ -146,7 +146,7 @@ def find_approaches_and_labels(data, zones):
                                       (data['low' if zone_type == 'demand' else 'high'] <= zone_level * 1.01)])
             features = {'prev_approaches': prev_approaches}
             instances.append({'features': features, 'outcome': outcome})
-    st.session_state.trade_log.append(f"Found {len(instances)} approach instances")
+    st.session_state.trade_log.append(f"Found {len(instances)} approach instances for {len(zones)} zones")
     return instances
 
 # Calculate zone significance
@@ -162,13 +162,15 @@ def calculate_zone_significance(data, zone, timeframe_idx):
 def find_aligned_zones(dfs, zones_list, timeframes_list):
     aligned_zones = {}
     for ticker in dfs:
-        aligned_zones[ticker] = []
+        aligned_zones[ticker] = []  # Explicitly initialize as empty list
+        st.session_state.trade_log.append(f"Processing aligned zones for {ticker}: dfs={len(dfs[ticker])}, zones_list={len(zones_list.get(ticker, []))}, timeframes={len(timeframes_list)}")
         if not any(zones for zones in zones_list.get(ticker, [])):
             st.session_state.trade_log.append(f"No zones found for {ticker}, skipping alignment")
             continue
         
         all_zones = []
         for idx, (df, zones, tf) in enumerate(zip(dfs[ticker], zones_list.get(ticker, [None]*4), timeframes_list)):
+            st.session_state.trade_log.append(f"Processing timeframe {tf} for {ticker}: df={df is not None}, zones={zones is not None}, len(zones)={len(zones) if zones else 0}")
             if zones and df is not None:
                 for zone in zones:
                     try:
@@ -230,7 +232,7 @@ def find_aligned_zones(dfs, zones_list, timeframes_list):
                 'count': len(current_group)
             })
     
-    st.session_state.trade_log.append(f"Aligned zones for all tickers: {list(aligned_zones.keys())}")
+    st.session_state.trade_log.append(f"Aligned zones for all tickers: {list(aligned_zones.keys())} with lengths {[len(z) for z in aligned_zones.values()]}")
     return aligned_zones
 
 # Generate trade recommendation
@@ -238,6 +240,9 @@ def generate_trade_recommendation(dfs, aligned_zones, symbol):
     if not aligned_zones or symbol not in aligned_zones or not aligned_zones[symbol]:
         st.session_state.trade_log.append(f"No aligned zones available for {symbol}")
         return {"signal": "Hold", "confidence": 0, "details": "No aligned zones found"}
+    if not isinstance(aligned_zones[symbol], list):
+        st.session_state.trade_log.append(f"Invalid aligned_zones type for {symbol}: {type(aligned_zones[symbol])}")
+        return {"signal": "Hold", "confidence": 0, "details": "Invalid aligned zones data"}
     
     latest_df = dfs[symbol][3]  # Lowest timeframe
     if latest_df is None:
