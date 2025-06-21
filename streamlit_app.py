@@ -423,34 +423,40 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
     if df is None or zones is None:
         st.session_state.trade_log.append(f"plot_chart failed for {symbol} (Timeframe: {timeframe}, Period: {period}): df or zones is None")
         return None
-    fig, ax = mpf.plot(df, type='candle', style='charles', returnfig=True, figsize=(10, 5))
-    ax[0].set_title(f'{symbol} Candlestick (Timeframe: {timeframe}, Period: {period})')
-    ax[0].set_ylabel('Price')
+    try:
+        fig, ax = mpf.plot(df, type='candle', style='charles', returnfig=True, figsize=(10, 5))
+        st.session_state.trade_log.append(f"plot_chart initialized for {symbol} (Timeframe: {timeframe}, Period: {period})")
+        ax[0].set_title(f'{symbol} Candlestick (Timeframe: {timeframe}, Period: {period})')
+        ax[0].set_ylabel('Price')
 
-    for zone in zones:
-        limit_price = zone['level']
-        side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        if side == 'BUY' and not show_buy_zones:
-            continue
-        if side == 'SELL' and not show_sell_zones:
-            continue
-        color = 'blue' if side == 'BUY' else 'red'
-        linewidth = 1
-        alpha = 0.5
+        for zone in zones:
+            limit_price = zone['level']
+            side = 'BUY' if zone['type'] == 'demand' else 'SELL'
+            if side == 'BUY' and not show_buy_zones:
+                continue
+            if side == 'SELL' and not show_sell_zones:
+                continue
+            color = 'blue' if side == 'BUY' else 'red'
+            linewidth = 1
+            alpha = 0.5
 
-        for az in aligned_zones.get(symbol, []):
-            if az and isinstance(az, dict) and 'level' in az and 'type' in az:
-                if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
-                    linewidth = 2
-                    alpha = 0.8
-                    break
+            for az in aligned_zones.get(symbol, []):
+                if az and isinstance(az, dict) and 'level' in az and 'type' in az:
+                    if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
+                        linewidth = 2
+                        alpha = 0.8
+                        break
 
-        if show_limit_lines:
-            ax[0].axhline(y=limit_price, color=color, linestyle='--', alpha=alpha, linewidth=linewidth)
-        if show_prices:
-            ax[0].text(len(df) - 1, limit_price, f'{limit_price:.2f}', ha='right', va='center', fontsize=10, color=color)
+            if show_limit_lines:
+                ax[0].axhline(y=limit_price, color=color, linestyle='--', alpha=alpha, linewidth=linewidth)
+            if show_prices:
+                ax[0].text(len(df) - 1, limit_price, f'{limit_price:.2f}', ha='right', va='center', fontsize=10, color=color)
 
-    return fig
+        st.session_state.trade_log.append(f"plot_chart completed for {symbol} (Timeframe: {timeframe}, Period: {period})")
+        return fig
+    except Exception as e:
+        st.session_state.trade_log.append(f"plot_chart error for {symbol} (Timeframe: {timeframe}, Period: {period}): {str(e)}")
+        return None
 
 def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones):
     if df is None or zones is None or not trades:
@@ -623,14 +629,19 @@ with tab1:
                 idx = 0
                 for ticker in final_ticker_list:
                     for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
-                        if df is not None and zones is not None:
+                        st.session_state.trade_log.append(f"Attempting to plot for {ticker} (Timeframe: {tf}, Period: {period}), df={df is not None}, zones={zones is not None}")
+                        if df is not None and zones is not None and len(zones) > 0:
                             with cols[idx % 4]:
                                 fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
                                 if fig:
                                     st.pyplot(fig)
                                     st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
                                     plt.close(fig)
+                                else:
+                                    st.error(f"Failed to generate chart for {ticker} (Timeframe: {tf}, Period: {period})")
                             idx += 1
+                        else:
+                            st.session_state.trade_log.append(f"Skipping plot for {ticker} (Timeframe: {tf}): df={df is not None}, zones={zones is not None}, len(zones)={len(zones) if zones else 0}")
             except IndexError as e:
                 st.error(f"Error rendering charts: {str(e)}. Check ticker and timeframe settings.")
         else:
