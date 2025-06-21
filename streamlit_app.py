@@ -317,10 +317,7 @@ def backtest_strategy(data, zones):
 
     for i in range(2, len(data)):
         current_time = data.index[i]
-        # Convert current_time to match the timezone of zone['date']
-        index_tz = data.index.tz
-        if index_tz:
-            current_time = current_time.tz_convert(index_tz)
+        current_candle = data.iloc[i]
         open_zones = [z for z in zones if z['date'] < current_time]
         
         for zone in open_zones:
@@ -437,14 +434,14 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
             continue
         if side == 'SELL' and not show_sell_zones:
             continue
-        color = 'blue' if side == 'BUY' else 'red'  # Reverted to original colors
-        linewidth = 2  # Increased to make lines bolder
+        color = 'blue' if side == 'BUY' else 'red'
+        linewidth = 1
         alpha = 0.5
 
         for az in aligned_zones.get(symbol, []):
             if az and isinstance(az, dict) and 'level' in az and 'type' in az:
                 if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
-                    linewidth = 2  # Kept at 2 for aligned zones
+                    linewidth = 2
                     alpha = 0.8
                     break
 
@@ -466,14 +463,14 @@ def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones
     for zone in zones:
         limit_price = zone['level']
         side = 'BUY' if zone['type'] == 'demand' else 'SELL'
-        color = 'blue' if side == 'BUY' else 'red'  # Reverted to original colors
-        linewidth = 2  # Increased to make lines bolder
+        color = 'blue' if side == 'BUY' else 'red'
+        linewidth = 1
         alpha = 0.5
 
         for az in aligned_zones.get(symbol, []):
             if az and isinstance(az, dict) and 'level' in az and 'type' in az:
                 if abs(az['level'] - limit_price) / limit_price < 0.01 and az['type'] == zone['type']:
-                    linewidth = 2  # Kept at 2 for aligned zones
+                    linewidth = 2
                     alpha = 0.8
                     break
 
@@ -627,7 +624,7 @@ with tab1:
             try:
                 num_plots = len(final_ticker_list) * len(timeframes_list)  # Total number of plots
                 for i in range(0, num_plots, 2):
-                    cols = st.columns([1, 1])  # Equal width columns
+                    cols = st.columns(2)
                     for j in range(2):
                         idx = i + j
                         if idx < num_plots:
