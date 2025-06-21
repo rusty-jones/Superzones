@@ -204,7 +204,7 @@ def find_aligned_zones(dfs, zones_list, timeframes_list):
                 if len(current_group) >= 2:
                     avg_level = np.mean([z['level'] for z in current_group])
                     zone_type = current_group[0]['type']
-                    timeframes = [z['timeframe'] for z in current_group]
+                    timeframes = [z['timeframe'] for z in current_group] if current_group[0].get('timeframe') else ['N/A']
                     total_score = sum(z['score'] for z in current_group)
                     approaches = sum(z['approaches'] for z in current_group)
                     age = np.mean([z['age'] for z in current_group])
@@ -222,7 +222,7 @@ def find_aligned_zones(dfs, zones_list, timeframes_list):
         if len(current_group) >= 2:
             avg_level = np.mean([z['level'] for z in current_group])
             zone_type = current_group[0]['type']
-            timeframes = [z['timeframe'] for z in current_group]
+            timeframes = [z['timeframe'] for z in current_group] if current_group[0].get('timeframe') else ['N/A']
             total_score = sum(z['score'] for z in current_group)
             approaches = sum(z['approaches'] for z in current_group)
             age = np.mean([z['age'] for z in current_group])
@@ -562,7 +562,7 @@ if not entered_tickers:
     st.session_state.trade_log.append("No valid tickers parsed, defaulting to ['nifty50']")
 
 mapped_tickers = [ticker_mapping.get(ticker, ticker) for ticker in entered_tickers]
-final_ticker_list = [symbol.upper() + ".NS" if append_ns and not symbol.startswith('^') else symbol.upper() for symbol in mapped_tickers]
+final_ticker_list = [symbol.upper() + ".NS" if append_ns and not symbol.startswith('^') else symbol.upper() for symbol in mapped_tickers if symbol]
 st.session_state.trade_log.append(f"Final ticker list: {final_ticker_list}")
 
 # Validate timeframes
@@ -618,18 +618,21 @@ with tab1:
                     st.session_state.trade_log.append(f"No aligned zones found for {ticker}, skipping recommendation")
         
         if final_ticker_list:  # Ensure final_ticker_list is valid
-            cols = st.columns(min(4, len(final_ticker_list) * 2))  # Up to 4 columns
-            idx = 0
-            for ticker in final_ticker_list:
-                for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
-                    if df is not None and zones is not None:
-                        with cols[idx % 4]:
-                            fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
-                            if fig:
-                                st.pyplot(fig)
-                                st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
-                                plt.close(fig)
-                        idx += 1
+            try:
+                cols = st.columns(min(4, len(final_ticker_list) * 2))  # Up to 4 columns
+                idx = 0
+                for ticker in final_ticker_list:
+                    for tf, period, df, zones in zip(timeframes_list, periods_list, st.session_state.dfs[ticker], st.session_state.zones_list[ticker]):
+                        if df is not None and zones is not None:
+                            with cols[idx % 4]:
+                                fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, st.session_state.aligned_zones)
+                                if fig:
+                                    st.pyplot(fig)
+                                    st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
+                                    plt.close(fig)
+                            idx += 1
+            except IndexError as e:
+                st.error(f"Error rendering charts: {str(e)}. Check ticker and timeframe settings.")
         else:
             st.error("No valid tickers to plot. Please check ticker input.")
 
@@ -721,14 +724,17 @@ with tab4:
                 st.write(f"**Details**: {rec['details']}")
                 
                 st.subheader(f"Aligned Zones for {ticker}")
-                zones_df = pd.DataFrame(st.session_state.aligned_zones[ticker])
-                if not zones_df.empty:
+                zones_data = st.session_state.aligned_zones[ticker]
+                if zones_data and all(isinstance(z, dict) and 'timeframes' in z for z in zones_data):
+                    zones_df = pd.DataFrame(zones_data)
                     zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
                     zones_df['level'] = zones_df['level'].round(2)
                     zones_df['age'] = zones_df['age'].round(1)
                     zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
                     zones_df.columns = ['Price Level', 'Type', 'Timeframes', 'TF Count', 'Approaches', 'Age (days)', 'Score']
                     st.dataframe(zones_df)
+                else:
+                    st.write("No valid aligned zones data available.")
             else:
                 st.write(f"Plot charts to generate trade recommendations for {ticker}.")
     else:
