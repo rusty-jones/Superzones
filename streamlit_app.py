@@ -417,6 +417,7 @@ def backtest_strategy(data, zones):
 # Plotting function
 def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, aligned_zones):
     if df is None or zones is None:
+        st.session_state.trade_log.append(f"plot_chart failed for {symbol} (Timeframe: {timeframe}, Period: {period}): df or zones is None")
         return None
     fig, ax = mpf.plot(df, type='candle', style='charles', returnfig=True, figsize=(10, 5))
     ax[0].set_title(f'{symbol} Candlestick (Timeframe: {timeframe}, Period: {period})')
@@ -449,6 +450,7 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
 
 def plot_trade_chart(df, zones, trades, symbol, timeframe, period, aligned_zones):
     if df is None or zones is None or not trades:
+        st.session_state.trade_log.append(f"plot_trade_chart failed for {symbol} (Timeframe: {timeframe}, Period: {period}): df, zones, or trades invalid")
         return None
     fig, ax = mpf.plot(df, type='candle', style='charles', returnfig=True, figsize=(10, 5))
     ax[0].set_title(f'{symbol} Trades (Timeframe: {timeframe}, Period: {period})')
@@ -576,11 +578,14 @@ tab1, tab2, tab3, tab4 = st.tabs(["Chart", "Backtest", "Trade Chart", "Decision"
 
 # Chart Tab
 with tab1:
-    if plot_button:
+    if 'plot_data_ready' not in st.session_state:
+        st.session_state.plot_data_ready = False
+    if plot_button and not st.session_state.plot_data_ready:
         st.session_state.dfs = {ticker: [None] * 4 for ticker in final_ticker_list}
         st.session_state.zones_list = {ticker: [None] * 4 for ticker in final_ticker_list}
         st.session_state.aligned_zones = {}
         st.session_state.recommendation = {}
+        st.session_state.plot_data_ready = True
         
         all_data = fetch_and_process_data(final_ticker_list, periods_intervals)
         for ticker in final_ticker_list:
@@ -625,13 +630,16 @@ with tab1:
 
 # Backtest Tab
 with tab2:
-    if backtest_button and any(any(df is not None for df in dfs.values()) for dfs in st.session_state.dfs.values()):
-        timeframes_list = [timeframe_1, timeframe_2, timeframe_3, timeframe_4]
-        periods_list = [period_1, period_2, period_3, period_4]
+    if 'backtest_data_ready' not in st.session_state:
+        st.session_state.backtest_data_ready = False
+    if backtest_button and not st.session_state.backtest_data_ready:
         st.session_state.trades_list = {ticker: [[] for _ in range(4)] for ticker in final_ticker_list}
         st.session_state.metrics_list = {ticker: [{} for _ in range(4)] for ticker in final_ticker_list}
         st.session_state.equity_list = {ticker: [[100000] for _ in range(4)] for ticker in final_ticker_list}
+        st.session_state.backtest_data_ready = True
         
+        timeframes_list = [timeframe_1, timeframe_2, timeframe_3, timeframe_4]
+        periods_list = [period_1, period_2, period_3, period_4]
         for ticker in final_ticker_list:
             for idx, (df, zones, tf, period) in enumerate(zip(st.session_state.dfs[ticker], st.session_state.zones_list[ticker], timeframes_list, periods_list)):
                 if df is None or zones is None:
@@ -707,7 +715,7 @@ with tab4:
             st.subheader(f"Aligned Zones for {ticker}")
             zones_df = pd.DataFrame(st.session_state.aligned_zones[ticker])
             if not zones_df.empty:
-                zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x))
+                zones_df['timeframes'] = zones_df['timeframes'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
                 zones_df['level'] = zones_df['level'].round(2)
                 zones_df['age'] = zones_df['age'].round(1)
                 zones_df = zones_df[['level', 'type', 'timeframes', 'count', 'approaches', 'age', 'score']]
