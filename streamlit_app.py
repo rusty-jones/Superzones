@@ -521,7 +521,7 @@ st.markdown("""
 # Sidebar for controls
 with st.sidebar:
     st.header("Controls")
-    tickers = st.text_input("Enter stock symbols (e.g., nifty50, banknifty)", "nifty50")
+    tickers = st.text_input("Enter stock symbols", "nifty50")
     append_ns = st.checkbox("NSE stocks", value=True)
     
     st.subheader("Timeframe 1")
@@ -530,7 +530,7 @@ with st.sidebar:
     
     st.subheader("Timeframe 2")
     timeframe_2 = st.selectbox("Timeframe 2", list(timeframes.keys()), index=7, key="tf2")  # Default to 1wk
-    period_2 = st.selectbox("Period 2", periods, index=2, key="p2")
+    period_2 = st.selectbox("Period 2", periods, index=3, key="p2")
     
     st.subheader("Timeframe 3")
     timeframe_3 = st.selectbox("Timeframe 3", list(timeframes.keys()), index=3, key="tf3")
