@@ -624,7 +624,7 @@ with tab1:
             try:
                 num_plots = len(final_ticker_list) * len(timeframes_list)  # Total number of plots
                 for i in range(0, num_plots, 2):
-                    cols = st.columns(2)
+                    cols = st.columns([1, 1])  # Equal width columns
                     for j in range(2):
                         idx = i + j
                         if idx < num_plots:
