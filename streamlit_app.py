@@ -50,6 +50,8 @@ if 'zone_groups_debug' not in st.session_state:
     st.session_state.zone_groups_debug = {}
 if 'all_zones_debug' not in st.session_state:
     st.session_state.all_zones_debug = {}
+if 'proposed_trade' not in st.session_state:
+    st.session_state.proposed_trade = {}
 if 'plot_data_ready' not in st.session_state:
     st.session_state.plot_data_ready = False
 if 'backtest_data_ready' not in st.session_state:
@@ -283,12 +285,12 @@ def build_relationship_chart(dfs, zones_list, timeframes_list, ticker, tolerance
 def generate_trade_recommendation(dfs, aligned_zones, symbol):
     if not aligned_zones or symbol not in aligned_zones or not aligned_zones[symbol]:
         st.session_state.trade_log.append(f"No aligned zones available for {symbol}")
-        return {"signal": "Hold", "confidence": 0, "details": "No aligned zones found"}
+        return {"signal": "Hold", "confidence": 0, "details": "No aligned zones found", "trade": None}
     
     latest_df = dfs[symbol][3]  # Lowest timeframe
     if latest_df is None or latest_df.empty:
         st.session_state.trade_log.append(f"No data for lowest timeframe for {symbol}")
-        return {"signal": "Hold", "confidence": 0, "details": "No data for lowest timeframe"}
+        return {"signal": "Hold", "confidence": 0, "details": "No data for lowest timeframe", "trade": None}
     
     current_price = latest_df['close'].iloc[-1]
     latest_candle = latest_df.iloc[-1]
@@ -298,7 +300,7 @@ def generate_trade_recommendation(dfs, aligned_zones, symbol):
     strong_zones = [zone for zone in aligned_zones[symbol] if zone['tf_count'] >= 2]
     if not strong_zones:
         st.session_state.trade_log.append(f"No zones found in 2+ timeframes for {symbol}")
-        return {"signal": "Hold", "confidence": 0, "details": "No zones aligned across 2+ timeframes"}
+        return {"signal": "Hold", "confidence": 0, "details": "No zones aligned across 2+ timeframes", "trade": None}
     
     zone_clusters = []
     strong_zones.sort(key=lambda x: x['level'])
@@ -344,6 +346,7 @@ def generate_trade_recommendation(dfs, aligned_zones, symbol):
             'htf_present': htf_present
         })
     
+    proposed_trade = None
     for cluster in sorted(zone_clusters, key=lambda x: x['score'], reverse=True)[:3]:
         zone_level = cluster['level']
         zone_type = cluster['type']
@@ -356,24 +359,101 @@ def generate_trade_recommendation(dfs, aligned_zones, symbol):
         if htf_present:
             confidence *= 1.3
         
-        if zone_type == 'supply' and current_price > zone_level * 1.005 and is_bullish and htf_present:
-            target = zone_level * 1.03
+        if confidence < 50:
+            continue
+        
+        if zone_type == 'demand' and proximity <= 0.02 and is_bullish:
+            entry = zone_level
             stop_loss = zone_level * 0.995
-            return {
-                "signal": "Breakout",
-                "confidence": min(confidence * 0.9, 100),
-                "details": f"Breakout above supply zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}"
-            }
-        elif zone_type == 'demand' and current_price < zone_level * 0.995 and is_bearish and htf_present:
-            target = zone_level * 0.97
+            next_supply = [z['level'] for z in strong_zones if z['type'] == 'supply' and z['level'] > zone_level]
+            target = min(next_supply) if next_supply else zone_level * 1.02
+            risk = entry - stop_loss
+            reward = target - entry
+            risk_reward = reward / risk if risk > 0 else 0
+            if risk_reward >= 2:
+                proposed_trade = {
+                    'type': 'buy',
+                    'entry': entry,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'risk_reward': risk_reward,
+                    'timeframe': timeframes_list[3]  # Lowest timeframe
+                }
+                return {
+                    "signal": "Buy",
+                    "confidence": min(confidence, 100),
+                    "details": f"Buy at demand zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}, R:R: {risk_reward:.2f}",
+                    "trade": proposed_trade
+                }
+        elif zone_type == 'supply' and proximity <= 0.02 and is_bearish:
+            entry = zone_level
             stop_loss = zone_level * 1.005
-            return {
-                "signal": "Breakdown",
-                "confidence": min(confidence * 0.9, 100),
-                "details": f"Breakdown below demand zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}"
-            }
+            next_demand = [z['level'] for z in strong_zones if z['type'] == 'demand' and z['level'] < zone_level]
+            target = max(next_demand) if next_demand else zone_level * 0.98
+            risk = stop_loss - entry
+            reward = entry - target
+            risk_reward = reward / risk if risk > 0 else 0
+            if risk_reward >= 2:
+                proposed_trade = {
+                    'type': 'sell',
+                    'entry': entry,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'risk_reward': risk_reward,
+                    'timeframe': timeframes_list[3]  # Lowest timeframe
+                }
+                return {
+                    "signal": "Sell",
+                    "confidence": min(confidence, 100),
+                    "details": f"Sell at supply zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}, R:R: {risk_reward:.2f}",
+                    "trade": proposed_trade
+                }
+        elif zone_type == 'supply' and current_price > zone_level * 1.005 and is_bullish and htf_present:
+            entry = current_price
+            stop_loss = zone_level * 0.995
+            target = zone_level * 1.03
+            risk = entry - stop_loss
+            reward = target - entry
+            risk_reward = reward / risk if risk > 0 else 0
+            if risk_reward >= 2:
+                proposed_trade = {
+                    'type': 'breakout',
+                    'entry': entry,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'risk_reward': risk_reward,
+                    'timeframe': timeframes_list[3]  # Lowest timeframe
+                }
+                return {
+                    "signal": "Breakout",
+                    "confidence": min(confidence * 0.9, 100),
+                    "details": f"Breakout above supply zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}, R:R: {risk_reward:.2f}",
+                    "trade": proposed_trade
+                }
+        elif zone_type == 'demand' and current_price < zone_level * 0.995 and is_bearish and htf_present:
+            entry = current_price
+            stop_loss = zone_level * 1.005
+            target = zone_level * 0.97
+            risk = stop_loss - entry
+            reward = entry - target
+            risk_reward = reward / risk if risk > 0 else 0
+            if risk_reward >= 2:
+                proposed_trade = {
+                    'type': 'breakdown',
+                    'entry': entry,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'risk_reward': risk_reward,
+                    'timeframe': timeframes_list[3]  # Lowest timeframe
+                }
+                return {
+                    "signal": "Breakdown",
+                    "confidence": min(confidence * 0.9, 100),
+                    "details": f"Breakdown below demand zone cluster at {zone_level:.2f} ({cluster['tf_count']} TFs: {', '.join(cluster['timeframes'])}). Retests: {cluster['approaches']}. Target: {target:.2f}, Stop Loss: {stop_loss:.2f}, R:R: {risk_reward:.2f}",
+                    "trade": proposed_trade
+                }
     
-    return {"signal": "Hold", "confidence": 0, "details": "No breakout or breakdown detected"}
+    return {"signal": "Hold", "confidence": 0, "details": "No breakout or breakdown detected", "trade": None}
 
 # Train the model
 def train_model(instances):
@@ -502,7 +582,7 @@ def backtest_strategy(data, zones):
     return trades, metrics, equity
 
 # Plotting function
-def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, aligned_zones, tolerance, show_aligned_zones, show_fresh_zones, retest_tolerance):
+def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_zones, show_limit_lines, show_prices, aligned_zones, tolerance, show_aligned_zones, show_fresh_zones, retest_tolerance, show_proposed_trade):
     if df is None or zones is None:
         st.session_state.trade_log.append(f"plot_chart failed for {symbol} (Timeframe: {timeframe}, Period: {period}): df or zones is None")
         return None
@@ -584,6 +664,33 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
                     y = retest_zone.loc[idx, 'low' if zone_type == 'demand' else 'high']
                     ax[0].scatter(x, y, marker='x', color='purple', s=50)
                     st.session_state.trade_log.append(f"Potential retest at {y:.2f} for {zone_type} zone at {zone_level:.2f} (TF: {timeframe}, {symbol})")
+
+    # Plot proposed trade on lowest timeframe
+    if show_proposed_trade and symbol in st.session_state.proposed_trade and st.session_state.proposed_trade[symbol] and timeframe == timeframes_list[3]:
+        trade = st.session_state.proposed_trade[symbol]
+        x = len(df) - 1  # Latest candle
+        if trade['type'] in ['buy', 'breakout']:
+            ax[0].scatter(x, trade['entry'], marker='^', color='green', s=100, label='Entry')
+            ax[0].scatter(x, trade['stop_loss'], marker='v', color='blue', s=100, label='Stop Loss')
+            ax[0].scatter(x, trade['target'], marker='o', color='yellow', s=100, label='Target')
+            ax[0].axhline(y=trade['entry'], color='green', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].axhline(y=trade['stop_loss'], color='blue', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].axhline(y=trade['target'], color='yellow', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].text(x, trade['entry'], f"Entry: {trade['entry']:.2f}", ha='right', va='bottom', fontsize=8, color='green')
+            ax[0].text(x, trade['stop_loss'], f"SL: {trade['stop_loss']:.2f}", ha='right', va='top', fontsize=8, color='blue')
+            ax[0].text(x, trade['target'], f"Target: {trade['target']:.2f}", ha='right', va='bottom', fontsize=8, color='yellow')
+        else:  # sell or breakdown
+            ax[0].scatter(x, trade['entry'], marker='v', color='red', s=100, label='Entry')
+            ax[0].scatter(x, trade['stop_loss'], marker='^', color='blue', s=100, label='Stop Loss')
+            ax[0].scatter(x, trade['target'], marker='o', color='yellow', s=100, label='Target')
+            ax[0].axhline(y=trade['entry'], color='red', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].axhline(y=trade['stop_loss'], color='blue', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].axhline(y=trade['target'], color='yellow', linestyle=':', alpha=0.6, linewidth=1)
+            ax[0].text(x, trade['entry'], f"Entry: {trade['entry']:.2f}", ha='right', va='top', fontsize=8, color='red')
+            ax[0].text(x, trade['stop_loss'], f"SL: {trade['stop_loss']:.2f}", ha='right', va='bottom', fontsize=8, color='blue')
+            ax[0].text(x, trade['target'], f"Target: {trade['target']:.2f}", ha='right', va='top', fontsize=8, color='yellow')
+        ax[0].legend()
+        st.session_state.trade_log.append(f"Plotted proposed {trade['type']} trade for {symbol}: Entry={trade['entry']:.2f}, SL={trade['stop_loss']:.2f}, Target={trade['target']:.2f}")
 
     return fig
 
@@ -715,6 +822,7 @@ with st.sidebar:
     show_prices = st.checkbox("Show Zone Prices", value=True)
     show_aligned_zones = st.checkbox("Show Aligned Zones", value=True)
     show_fresh_zones = st.checkbox("Show Fresh Zones", value=True)
+    show_proposed_trade = st.checkbox("Show Proposed Trade", value=True)
     plot_button = st.button("Plot Chart")
     backtest_button = st.button("Run Backtest")
 
@@ -763,6 +871,7 @@ with tab1:
         st.session_state.zone_groups_debug = {ticker: [] for ticker in final_ticker_list}
         st.session_state.all_zones_debug = {ticker: [] for ticker in final_ticker_list}
         st.session_state.recommendation = {}
+        st.session_state.proposed_trade = {}
         
         st.session_state.plot_data_ready = True
         
@@ -790,10 +899,14 @@ with tab1:
                     )
                     st.session_state.trade_log.append(f"{ticker}: Aligned zones: {st.session_state.aligned_zones[ticker]}")
                     st.session_state.trade_log.append(f"{ticker}: Fresh zones: {st.session_state.fresh_zones[ticker]}")
-                    st.session_state.recommendation[ticker] = generate_trade_recommendation(
+                    recommendation = generate_trade_recommendation(
                         {ticker: st.session_state.dfs[ticker]}, st.session_state.aligned_zones, ticker
                     )
-                    st.session_state.trade_log.append(f"Found {len(st.session_state.aligned_zones[ticker])} aligned zones for {ticker}. Recommendation: {st.session_state.recommendation[ticker]['signal']}")
+                    st.session_state.recommendation[ticker] = recommendation
+                    st.session_state.proposed_trade[ticker] = recommendation.get('trade')
+                    st.session_state.trade_log.append(f"Found {len(st.session_state.aligned_zones[ticker])} aligned zones for {ticker}. Recommendation: {recommendation['signal']}")
+                    if st.session_state.proposed_trade[ticker]:
+                        st.session_state.trade_log.append(f"Proposed {st.session_state.proposed_trade[ticker]['type']} trade for {ticker}: Entry={st.session_state.proposed_trade[ticker]['entry']:.2f}, SL={st.session_state.proposed_trade[ticker]['stop_loss']:.2f}, Target={st.session_state.proposed_trade[ticker]['target']:.2f}")
                 except Exception as e:
                     st.session_state.trade_log.append(f"Error generating recommendation for {ticker}: {str(e)}")
                     st.error(f"Error generating recommendation for {ticker}: {str(e)}")
@@ -817,7 +930,8 @@ with tab1:
                                 with cols[j]:
                                     fig = plot_chart(df, zones, ticker, tf, period, show_buy_zones, show_sell_zones, 
                                                     show_limit_lines, show_prices, st.session_state.aligned_zones, 
-                                                    tolerance, show_aligned_zones, show_fresh_zones, retest_tolerance)
+                                                    tolerance, show_aligned_zones, show_fresh_zones, retest_tolerance,
+                                                    show_proposed_trade)
                                     if fig:
                                         st.pyplot(fig)
                                         st.session_state.trade_log.append(f"Chart plotted successfully for {ticker} (Timeframe: {tf})!")
@@ -915,6 +1029,21 @@ with tab4:
                 st.write(f"**Signal**: {rec['signal']}")
                 st.write(f"**Confidence**: {rec['confidence']:.1f}%")
                 st.write(f"**Details**: {rec['details']}")
+                
+                st.subheader(f"Proposed Trade for {ticker}")
+                if st.session_state.proposed_trade.get(ticker):
+                    trade = st.session_state.proposed_trade[ticker]
+                    trade_df = pd.DataFrame([{
+                        'Type': trade['type'].capitalize(),
+                        'Entry': round(trade['entry'], 2),
+                        'Stop Loss': round(trade['stop_loss'], 2),
+                        'Target': round(trade['target'], 2),
+                        'Risk-Reward': round(trade['risk_reward'], 2),
+                        'Timeframe': trade['timeframe']
+                    }])
+                    st.dataframe(trade_df)
+                else:
+                    st.write("No proposed trade available.")
                 
                 st.subheader(f"Fresh Zones (0 Retests) for {ticker}")
                 fresh_zones_df = pd.DataFrame(st.session_state.fresh_zones.get(ticker, []))
