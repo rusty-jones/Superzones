@@ -230,7 +230,7 @@ def build_relationship_chart(dfs, zones_list, timeframes_list, ticker, tolerance
                 timeframes = [z['timeframe'] for z in current_group]
                 total_score = sum(z['score'] for z in current_group)
                 approaches = sum(z['approaches'] for z in current_group)
-                age = np.mean([z['age'] for z in current_group)
+                age = np.mean([z['age'] for z in current_group])
                 htf_present = any(tf in ['1h', '4h', '1d'] for tf in timeframes)
                 ltf_present = any(tf in ['1m', '5m', '15m', '30m'] for tf in timeframes)
                 relationship_score = total_score * (1.5 if htf_present and ltf_present else 1.0)
