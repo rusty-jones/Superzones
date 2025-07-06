@@ -603,7 +603,7 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
 
     if show_aligned_zones:
         for az in aligned_zones.get(symbol, []):
-            if az['tf_count] < 2:
+            if az['tf_count'] < 2:
                 continue
             zone_level = az['level']
             zone_type = az['type']
