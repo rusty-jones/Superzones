@@ -654,7 +654,7 @@ def plot_chart(df, zones, symbol, timeframe, period, show_buy_zones, show_sell_z
                 for idx in retest_zone.index:
                     x = df.index.get_loc(idx)
                     y = retest_zone.loc[idx, 'low' if zone_type == 'demand' else 'high']
-                    ax[0].scatter(x, y, marker='x', color='purple', s=50)
+                    ax[0].scatter(x, y, marker='', color='purple', s=50)
                     st.session_state.trade_log.append(f"Potential retest at {y:.2f} for {zone_type} zone at {zone_level:.2f} (TF: {timeframe}, {symbol})")
 
     if show_proposed_trade and symbol in st.session_state.proposed_trade and st.session_state.proposed_trade[symbol] and timeframe == timeframes_list[3]:
